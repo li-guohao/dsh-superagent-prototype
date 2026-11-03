@@ -411,6 +411,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/maildrop.spec.ts` | The Maildrop Source: poll order and cursor persistence, malformed files, and idempotent outbox delivery |
 | `tests/maildrop-e2e.spec.ts` | Round-3 integration: real inbox → real maildrop poll → real HTTP to a fake OpenAI-compatible endpoint → real outbox reply, with a replay-log proof the HTTP round-trip was genuine |
+| `tests/maildrop-harness.spec.ts` | Round-4 harness agent-loop: real Runtime with maildropKind, Thread keying, Admission gate (allowed sender match), Eval/route accept → Ticket creation → Worker assignment → OutboundMessage via sendMaildrop. Uses startRuntime fixture's harness plumbing; MasterAssessor LLM step is replaced by direct route() injection (fixture standard). |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
