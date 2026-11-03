@@ -213,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fake OpenAI-compatible chat completions endpoint.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--reply", default="echo: {user_text}",
+    parser.add_argument("--reply", default="echo: {user_text} | from-fake-llm",
                         help="Reply template, use {user_text} as placeholder.")
     args = parser.parse_args()
     server = ThreadingHTTPServer((HOST, args.port), Handler)
