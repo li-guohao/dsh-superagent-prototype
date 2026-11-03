@@ -80,7 +80,120 @@ class Handler(BaseHTTPRequestHandler):
         with REPLAY_PATH.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         reply_text = fake_reply(self.server.reply_template, body)
-        self._send_json(200, build_response(body, reply_text))
+        # Mirror the client's request: pi-ai always asks for SSE, and a JSON body on a
+        # streaming call fails with "Stream ended without finish_reason".
+        is_stream = bool(body.get("stream", False))
+        if is_stream:
+            self._send_stream(200, body, reply_text)
+        else:
+            self._send_json(200, build_response(body, reply_text))
+
+    def _send_stream(self, status: int, request_body: dict, reply_text: str) -> None:
+        """OpenAI SSE format: send role chunk, content/tool chunks, finish chunk, then [DONE]."""
+        model = request_body.get("model", "fake-model")
+        chat_id = "chatcmpl-fake-000000000000000000"
+        created = int(datetime.now().timestamp())
+        tools = request_body.get("tools", [])
+        # Detect eval session: if orchestrator_eval_decide tool is offered, make a tool call to finish the eval.
+        decide_tool = next((t for t in tools if t.get("function", {}).get("name") == "orchestrator_eval_decide"), None)
+        route_tool = next((t for t in tools if t.get("function", {}).get("name") == "orchestrator_route"), None)
+        trigger_id = None
+        msg_count = len(request_body.get("messages", []))
+        # A session replays its whole history on every turn, so "any tool message exists" is always
+        # true after the first decision and would suppress later ones. Anchor on the newest
+        # candidate card instead: emit the tool call only when nothing has answered that card yet.
+        last_candidate = -1
+        for index, msg in enumerate(request_body.get("messages", [])):
+            content = msg.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = " ".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+            else:
+                # Assistant messages that only carry tool_calls have content=null.
+                text = ""
+            if msg.get("role") == "user" and "trigger_id" in text and "candidate" in text:
+                last_candidate = index
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, dict) and "trigger_id" in parsed:
+                        trigger_id = parsed["trigger_id"]
+                except json.JSONDecodeError:
+                    pass
+        messages_after_candidate = request_body.get("messages", [])[last_candidate + 1:]
+        answered = any(msg.get("role") == "tool" for msg in messages_after_candidate)
+        # DEBUG: print decision variables
+        print(f"[FAKE-DEBUG] msgs={msg_count} decide_tool={decide_tool is not None} trigger_id={trigger_id!r} answered={answered}", file=sys.stderr, flush=True)
+        # Only emit tool_call on FIRST eval round (before any tool results);
+        # subsequent rounds get plain text so the Session terminates gracefully.
+        should_emit_tool = (route_tool is not None or decide_tool is not None) and trigger_id is not None and not answered
+        print(f"[FAKE-DEBUG] should_emit_tool={should_emit_tool}", file=sys.stderr, flush=True)
+        frames: list[str] = []
+        def emit(obj: dict) -> None:
+            frames.append(f"data: {json.dumps(obj, ensure_ascii=False)}\n\n")
+        # 1. role chunk
+        emit({"id": chat_id, "object": "chat.completion.chunk", "created": created, "model": model,
+              "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
+        if should_emit_tool:
+            # An explicit human request is routed, not assessed: orchestrator_route accept creates the
+            # ticket and posts the acknowledgement, which is what makes a reply show up in the outbox.
+            if route_tool is not None:
+                name = "orchestrator_route"
+                tool_args = {"decisions": [{
+                    "kind": "accept",
+                    "trigger_id": trigger_id,
+                    "title": "Smoke-test maildrop end-to-end reply",
+                    "worktree_name": "smoke-test-reply",
+                    "acknowledgement": "Replying FULL_CHAIN_OK to confirm the pipeline works.",
+                }]}
+            else:
+                name = "orchestrator_eval_decide"
+                tool_args = {
+                    "trigger_id": trigger_id,
+                    "decision": "accept",
+                    "direction": {
+                        "implementation_requested": True,
+                        "target_basis": "specified",
+                        "requires_design_decision": False,
+                        "evidence": "Smoke test auto-accepts: message asks for FULL_CHAIN_OK reply, confirming end-to-end maildrop → orchestrator → outbox pipeline."
+                    },
+                    "rule_assessments": [],
+                    "title": "Smoke-test maildrop end-to-end reply",
+                    "scope": "Verify maildrop source triggers → orchestrator eval → reply in outbox.",
+                    "worktree_name": "smoke-test-reply",
+                    "intent_evidence": "Smoke test: fake LLM auto-accepts every candidate for end-to-end verification.",
+                    "acknowledgement": "Replying FULL_CHAIN_OK to confirm the pipeline works.",
+                    "reason": "Automated smoke test; auto-accept all maildrop candidates."
+                }
+            args_json = json.dumps(tool_args)
+            print(f"[FAKE-DEBUG] emitting {name} args={args_json[:400]}", file=sys.stderr, flush=True)
+            emit({"id": chat_id, "object": "chat.completion.chunk", "created": created, "model": model,
+                  "choices": [{"index": 0, "delta": {"tool_calls": [{
+                      "index": 0, "id": "call_fake_001", "type": "function",
+                      "function": {"name": name, "arguments": args_json}
+                  }]}, "finish_reason": None}]})
+            # finish_reason = "tool_calls" (not "stop")
+            emit({"id": chat_id, "object": "chat.completion.chunk", "created": created, "model": model,
+                  "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
+        else:
+            # plain text reply (non-eval scenarios)
+            emit({"id": chat_id, "object": "chat.completion.chunk", "created": created, "model": model,
+                  "choices": [{"index": 0, "delta": {"content": reply_text}, "finish_reason": None}]})
+            emit({"id": chat_id, "object": "chat.completion.chunk", "created": created, "model": model,
+                  "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        frames.append("data: [DONE]\n\n")
+        # An SSE body with neither Content-Length nor chunked framing makes the client abort
+        # with "Connection error" (TRANSPORT). Buffering the whole payload and declaring its
+        # length keeps the response self-delimiting while staying valid text/event-stream.
+        payload = "".join(frames).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(payload)
+        self.wfile.flush()
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/healthz":
