@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { OutboundMessage, Trigger } from '../src/core/index.ts'
 import type { Deployment } from '../src/deployment.ts'
 import type { Health, SourceContext } from '../src/sources/host.ts'
-import { MaildropConfigSchema, maildropKind, pollMaildrop, sendMaildrop, SOURCE, type MaildropConfig } from '../src/sources/maildrop.ts'
+import { MaildropConfigSchema, maildropKind, maildropTrigger, pollMaildrop, sendMaildrop, SOURCE, type MaildropConfig } from '../src/sources/maildrop.ts'
 
 let root = ''
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'dsh-superagent-maildrop-test-')) })
@@ -61,6 +61,22 @@ describe('maildrop source', () => {
     expect(received[0]!.channel?.address.outbox).toBe(cfg.outbox)
     // A message without `thread` threads by its own ID.
     expect(received[1]!.channel?.thread).toBe(`${SOURCE}:m2`)
+  })
+
+  it('gives every message its own stable trigger id, so a second mail is not deduplicated away', async () => {
+    const cfg = config()
+    const { mkdirSync } = await import('node:fs')
+    mkdirSync(cfg.inbox, { recursive: true })
+    drop(cfg.inbox, '0001.json', { id: 'm1', from: 'alice', text: 'first' })
+    drop(cfg.inbox, '0002.json', { id: 'm2', from: 'bob', text: 'second' })
+    const { source, received } = fakeSource(cfg)
+
+    expect(await pollMaildrop(source, cfg)).toBe(2)
+    // Intake drops a trigger whose id already exists, so one id for every message would silently swallow all but the first.
+    expect(received[0]!.id).not.toBe(received[1]!.id)
+    // Stability matters too: the same message must keep its id across polls and restarts, or re-delivery would duplicate it.
+    expect(maildropTrigger({ id: 'm1', from: 'alice', text: 'first' }, cfg.outbox).id).toBe(received[0]!.id)
+    expect(maildropTrigger({ id: 'm2', from: 'bob', text: 'second' }, cfg.outbox).id).toBe(received[1]!.id)
   })
 
   it('persists the cursor so a second poll ingests nothing and a restart repeats nothing', async () => {

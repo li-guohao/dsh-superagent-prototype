@@ -45,7 +45,9 @@ export const maildropRef = (id: string): ThreadRef => ({ source: SOURCE, id })
 export function maildropTrigger(message: MaildropMessage, outbox: string): Trigger {
   const thread = message.thread ?? message.id
   return {
-    id: key(),
+    // Derive the id from the message's own ID rather than a stateless `key()`: Intake rejects a trigger whose id is
+    // already stored, so one constant id would silently drop every mail after the first in a state directory.
+    id: key(SOURCE, message.id),
     source: SOURCE,
     threads: [maildropRef(thread)],
     actor: { source: SOURCE, id: message.from },
