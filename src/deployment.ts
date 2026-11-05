@@ -15,6 +15,8 @@ const absolute = (description: string) => s.string().pattern(/^(\/|[A-Za-z]:[\\/
 /** Plugin configuration of the dsh-superagent entry. Volatile fields apply without a restart because dsh-superagent reads them on each use; changing `stateDir` remounts the plugin. */
 export const Config = s.object({
   stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.').required(),
+  repositoryMode: s.union([s.const('required'), s.const('no-repository')]).default('required')
+    .description('`required` (default) demands a GitHub repository and CLI; `no-repository` declares a deployment that only uses repository-free Sources.'),
   promptMaxChars: s.number().min(LIMITS.promptMaxChars.min).max(LIMITS.promptMaxChars.max).step(1).default(100000)
     .description('Largest saved prompt configuration, in characters.').volatile(),
   admissionContextMaxPages: s.number().min(LIMITS.admissionContextMaxPages.min).max(LIMITS.admissionContextMaxPages.max).step(1).default(10)
@@ -23,8 +25,11 @@ export const Config = s.object({
     .default(15000).description('Time limit of one context read during an assessment, in milliseconds.').volatile(),
 })
 export type DeploymentConfig = ReturnType<typeof Config>
+/** Whether this deployment is bound to a GitHub repository. The single discriminant every repository consumer narrows on. */
+export type RepositoryMode = 'required' | 'no-repository'
 export interface Machine {
   stateDir: string
+  repositoryMode: RepositoryMode
   promptMaxChars: Volatile<number>
   admissionContextMaxPages: Volatile<number>
   admissionContextTimeoutMs: Volatile<number>
@@ -39,8 +44,8 @@ const MOVED: Record<string, string> = {
 export function machineOf(config: DeploymentConfig): Machine {
   const unknown = Object.keys(config).filter(key => !(key in (Config.dict ?? {})))
   if (unknown.length) throw new Error(`dsh-superagent configuration has keys it does not use: ${unknown.map(key => MOVED[key] ? `${key} (now ${MOVED[key]})` : key).join(', ')}; docs/006-deployment.md lists the keys`)
-  const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs } = config
-  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
+  const { stateDir, repositoryMode, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs } = config
+  return { stateDir, repositoryMode, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
 }
 
 export const GithubAccountsSchema = z.object({
@@ -51,12 +56,22 @@ export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
-export interface Deployment extends Machine {
-  repository: string
-  github: { cli: string; login: string; noreply: string }
-  feishu?: FeishuBot
-}
+export interface DeploymentBase extends Machine { feishu?: FeishuBot }
+/** A deployment bound to a GitHub repository; the only shape that carries repository access. */
+export interface RepositoryDeployment extends DeploymentBase { repositoryMode: 'required'; repository: string; github: { cli: string; login: string; noreply: string } }
+/** A deployment that explicitly declares it has no repository: repository access is absent, not empty. */
+export interface RepositorylessDeployment extends DeploymentBase { repositoryMode: 'no-repository' }
+export type Deployment = RepositoryDeployment | RepositorylessDeployment
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
+
+/**
+ * Repository access used by GitHub features. Narrowing here keeps the absence explicit instead of handing out an empty
+ * repository string; such a deployment is only reachable when a repository-consuming feature is enabled by mistake.
+ */
+export function repositoryAccess(deployment: Deployment): { repository: string; github: RepositoryDeployment['github'] } {
+  if (deployment.repositoryMode === 'required') return deployment
+  throw new Error('This deployment has repositoryMode "no-repository": set it to "required" and configure the GitHub Source to use repository features')
+}
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
 export function executable(name: string, path: string, exclude?: string): string {
@@ -86,6 +101,8 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
 }
 /** Verify the agent's GitHub CLI identity and push access to the configured repository. */
 export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+  // Declaring the mode is the whole setup step for a repository-less deployment: no CLI is probed and nothing is fabricated.
+  if (machine.repositoryMode === 'no-repository') return { ...machine, repositoryMode: 'no-repository' }
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
   const remote = accounts.repository

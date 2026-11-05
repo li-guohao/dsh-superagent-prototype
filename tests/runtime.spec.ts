@@ -840,6 +840,20 @@ it('waits for setup without the agent\'s GitHub CLI: the panel works, and nothin
   await vi.waitFor(() => expect(restarts).toHaveBeenCalledTimes(2))
 })
 
+it('accepts a deployment that declares itself repository-less, without inventing a repository or probing gh', async () => {
+  // The operator states the intent explicitly and supplies neither a repository nor a CLI.
+  const next = await restart({ repositoryMode: 'no-repository' }, { github: { repository: '', cli: '' } })
+  await next.ready
+  expect(next.configured()).toBe(true)
+  expect(next.setupProblem).toBeUndefined()
+  // The mode is the single predicate: the resolved deployment carries no repository and no GitHub identity at all.
+  expect(next.deployment).toMatchObject({ repositoryMode: 'no-repository', stateDir: directory })
+  expect(next.deployment).not.toHaveProperty('repository')
+  expect(next.deployment).not.toHaveProperty('github')
+  expect(next.health.runtime).toMatchObject({ state: 'ready' })
+  expect((await api('GET', 'state')).body).toMatchObject({ setup: { problem: null, accounts: null } })
+})
+
 it('reports each setup problem where the operator fixes it, and checks the agent CLI the way worker shells run it', async () => {
   const needs = async (place: string, code: string, values: Record<string, string>, accounts: Accounts = {}) => {
     const next = await restart({}, accounts)
