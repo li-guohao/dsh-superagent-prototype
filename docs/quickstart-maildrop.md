@@ -42,6 +42,8 @@ dsh --profile smoke --dump-config | grep -A2 dsh-superagent   # 能查到即装�
 | `llm-pi-ai` | `providers.<name>.api` `baseURL` `apiKeyEnv` | LLM provider |
 | `agent-default-model` | `provider` / `model` | 主 Session 用哪个模型 |
 
+真实 DeepSeek 不用 `llm-pi-ai` 的 `api` 字段，而是 `llm-deepseek` 行（无 `api:`），切换方法与凭据语义见 §10。
+
 只用 maildrop、机器上也没有 `gh` 时，**显式声明无仓库模式**，否则 setup 会停在「缺仓库 / 缺 GitHub CLI」面板：
 
 ```yaml
@@ -176,7 +178,62 @@ maildrop 的 thread 由消息里的 `thread` 字段决定（缺省时用消息 `
 | `pnpm check` 里两条 e2e 报 `ECONNREFUSED 127.0.0.1:18787` | 跑测试前没起假端点（`tests/maildrop-e2e.spec.ts` 直连 18787） | 先起端点再跑，见 §4 末段 |
 | outbox 空但 requests.jsonl 有行 | 模型只回了文本，没调用工具 → 没有决策/工单 | 确认端点确实返回 `tool_calls` 且 `finish_reason=tool_calls` |
 
-## 10. 清理
+## 10. 接真模型（可选）
+
+假端点验证完链路后，把主模型换成官方 DeepSeek 只改两行。注意：**这个适配器没有 `api:` 字段**。
+`dsh-base` 已经挂了 `@deepseek-ai/dsh-llm-deepseek`（route `deepseek-official`，Messages 线格式，
+默认 `baseURL` 为 `https://api.deepseek.com/anthropic`），所以配置只是给它一个凭据引用：
+
+```yaml
+- id: llm-deepseek
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+```
+
+[examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) 里这段是注释掉的，取消注释即可切换。
+模型 id 直接透传到 wire：不写 `models` 时默认广告 `deepseek-flash`（文本+图像）与 `deepseek-v4-pro`（纯文本）；
+写 `models` 会**整体替换**默认列表。
+
+`apiKeyEnv` 的语义：它只是一个**引用名**，不是值。适配器每次请求时按以下顺序解析：
+
+1. 当前 endpoint 对应的 DeepSeek 账号凭据（`$DSH_HOME/.credentials.yaml` 里的 account token）；
+2. credentials service 里以该引用名存储的条目（Web 的 Models 页写的就是这里）；
+3. 启动 dsh 的**进程环境变量**同名项。
+
+所以「环境变量里没有 key」不等于「没凭据」——先在 Models 页或 credentials service 里查一遍。真实 key
+**不要**写进 `cordis.patch.yml`，也不要提交到仓库。
+
+### 缺凭据时的真实报错（已实测）
+
+用一个故意不存在的引用名 `DSH_R16_MISSING_KEY`、并把 `baseURL` 指到非 DeepSeek 源（让账号凭据不适用）
+启动一次，`dsh headless` 的 stderr 原文：
+
+```
+dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; store DSH_R16_MISSING_KEY through the credentials service (the web Models page writes it), or export DSH_R16_MISSING_KEY in the launching environment
+```
+
+可诊断性结论：报错同时给出**错误码**（`MISSING_CREDENTIAL`）、**适配器行 id**（`llm-deepseek`）、
+**provider route**（`deepseek-official`）和**具体引用名**（`DSH_R16_MISSING_KEY`，即你的 `apiKeyEnv` 值），
+并给出两条修复路径。定位到具体 provider/变量不需要改代码。
+
+排查顺序：报错里的引用名是不是你在 `llm-deepseek` 行写的 `apiKeyEnv`？→ 这个引用名是否真的存在于
+credentials service 或**启动进程的环境**（不是另一个 shell 里 `set` 过的）？→ 若用 `baseURL` 指向第三方
+Messages 网关，账号凭据不适用，必须提供 API key。
+
+### 最小成本真跑（已验证）
+
+```bash
+dsh headless --patch <overlay.yml> "Reply with REAL_OK only."
+```
+
+overlay 里把 `reasoningEffort` 设为 `off`、`maxTokens` 压到 16。**若不关 thinking**，16 token 会被
+reasoning 吃光，`turn/end` 的 reason 是 `max-tokens` 且没有可见文本；这只是输出上限太小，不是链路故障。
+
+## 11. 清理
 
 停掉 dsh 后删除 `<MAILDROP_DIR>` 与 `<STATE_DIR>` 即可；
 Session 记录在 `$DSH_HOME/sessions/<cwd hash>/<session id>/session.v4.jsonl.zstd`（zstd 压缩 JSONL，
