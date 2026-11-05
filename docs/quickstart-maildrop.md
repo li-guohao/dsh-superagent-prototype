@@ -72,6 +72,24 @@ python examples/fake_model_endpoint.py --port 18787 --reply "FULL_CHAIN_OK | {us
 
 启动时脚本会清空 `examples/requests.jsonl`，之后每次请求追加一行 —— 这就是 replay log。
 
+**跑 `pnpm check` 之前，必须让这个端点常驻。** `tests/maildrop-e2e.spec.ts` 会直连
+`127.0.0.1:18787/v1/chat/completions`（可用环境变量 `FAKE_LLM_URL` 覆盖）。端点没起来时，
+其中两条 e2e 用例必然报 `TypeError: fetch failed`，`Caused by: connect ECONNREFUSED 127.0.0.1:18787`
+—— 这是环境没就绪，不是代码回归。
+
+```bash
+python examples/fake_model_endpoint.py --port 18787 &   # 先起端点
+pnpm check                                              # 再跑全量检查
+```
+
+PowerShell 里用 `Start-Process python -ArgumentList "fake_model_endpoint.py","--port","18787" -WindowStyle Hidden`（工作目录 `examples/`）。
+
+端口被占用时（启动报 `Address already in use`，或不确定是谁占着）：
+
+- Windows：`Get-NetTCPConnection -LocalPort 18787 | Select-Object OwningProcess`，再 `Stop-Process -Id <pid>`；
+- 不想动占用进程，就换端口：`python examples/fake_model_endpoint.py --port 18788`，并在同一个 shell 里
+  设 `FAKE_LLM_URL=http://127.0.0.1:18788/v1/chat/completions`（PowerShell：`$env:FAKE_LLM_URL = '...'`）后再跑 `pnpm check`。
+
 ## 5. 启动 dsh（环境变量注入是唯一的硬坑）
 
 `apiKeyEnv: FAKE_LLM_KEY` 读的是 **进程环境**，不是配置文件，也不是 shell 里随便 `set` 过的变量。
@@ -155,6 +173,7 @@ maildrop 的 thread 由消息里的 `thread` 字段决定（缺省时用消息 `
 | `Connection error` / `TRANSPORT` | SSE 无 `Content-Length`；或端点处理异常导致请求线程崩溃 | 见 §4.2；同时检查端点 stderr 有没有 traceback |
 | `This is an explicit request, which is routed instead of assessed` | 用了 `orchestrator_eval_decide` | 见 §4.3 |
 | `no credential for provider route ...` | 环境变量没随进程注入 | 见 §5 |
+| `pnpm check` 里两条 e2e 报 `ECONNREFUSED 127.0.0.1:18787` | 跑测试前没起假端点（`tests/maildrop-e2e.spec.ts` 直连 18787） | 先起端点再跑，见 §4 末段 |
 | outbox 空但 requests.jsonl 有行 | 模型只回了文本，没调用工具 → 没有决策/工单 | 确认端点确实返回 `tool_calls` 且 `finish_reason=tool_calls` |
 
 ## 10. 清理
