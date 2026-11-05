@@ -42,6 +42,17 @@ dsh --profile smoke --dump-config | grep -A2 dsh-superagent   # 能查到即装�
 | `llm-pi-ai` | `providers.<name>.api` `baseURL` `apiKeyEnv` | LLM provider |
 | `agent-default-model` | `provider` / `model` | 主 Session 用哪个模型 |
 
+只用 maildrop、机器上也没有 `gh` 时，**显式声明无仓库模式**，否则 setup 会停在「缺仓库 / 缺 GitHub CLI」面板：
+
+```yaml
+- id: dsh-superagent
+  config:
+    stateDir: <绝对路径>
+    repositoryMode: no-repository
+```
+
+`repositoryMode` 默认 `required`（要求仓库 + `gh`）。设为 `no-repository` 时，解析出来的 Deployment **不携带** `repository` 与 `github` 字段（不是空字符串占位），`gh` 垫片会直接失败而不是转发给真实 `gh`，worker 的 gitconfig 也不写 credential helper。名字里的 `no-repository` 是唯一判据；不声明它就必须配仓库，二者没有中间状态。
+
 ## 4. 启动假 LLM 端点
 
 ```bash
@@ -120,7 +131,7 @@ credentials service (the web Models page writes it) or export it, and remove api
 | 现象 | 原因 | 处理 |
 |------|------|------|
 | `Lock file is already being held` | 上一个 dsh 被强杀，proper-lockfile 未释放（stale 阈值 30s） | 删掉 `<STATE_DIR>.lock` 再启动，或等 30s |
-| `receive returned duplicate for <file>` | `src/sources/maildrop.ts` 的 `maildropTrigger` 用 `id: key()`（无参）→ **所有邮件共享同一个常量 trigger id**，同一 stateDir 下只有第一条有效 | 换新 `stateDir`，或清掉 `kv` 里的 `maildrop:cursor` 并清业务表；根治需改成 `key(<来源>, <邮件 id>)` |
+| `receive returned duplicate for <file>` | 旧版本的 `maildropTrigger` 用无参 `key()` → 所有邮件共享同一个常量 trigger id，同一 stateDir 下只有第一条有效。**本分支已修复**：trigger id 现在是 `key('maildrop', <邮件 id>)`，稳定且逐条唯一 | 旧 stateDir 里那条历史记录不迁移（cursor 已越过其文件名，不会重收）；升级后投新文件即正常 |
 | `Stream ended without finish_reason` | 端点没按 `stream: true` 回 SSE | 见 §4.1 |
 | `Connection error` / `TRANSPORT` | SSE 无 `Content-Length`；或端点处理异常导致请求线程崩溃 | 见 §4.2；同时检查端点 stderr 有没有 traceback |
 | `This is an explicit request, which is routed instead of assessed` | 用了 `orchestrator_eval_decide` | 见 §4.3 |
