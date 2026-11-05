@@ -111,7 +111,7 @@ credentials service (the web Models page writes it) or export it, and remove api
 
 - 持续只有 `done, stored=0` → loop 活着，但没有新文件（正常空转）。
 - 出现 `found N inbox files, cursor="..."` 且 cursor 在变 → cursor 在推进，ingest 生效。
-- 出现 `receive returned duplicate for <file>` → 见 §8 第 2 条。
+- 出现 `receive returned duplicate for <file>` → 见 §9 第 2 条。
 
 投递一个文件（文件名会被字典序排序，cursor 是**文件名字符串**，新文件名必须大于旧 cursor）：
 
@@ -126,7 +126,26 @@ credentials service (the web Models page writes it) or export it, and remove api
 2. `examples/requests.jsonl` 新增行，且 `Authorization: Bearer <你的占位 key>`、`model` 与 patch 一致。
 3. `<STATE_DIR>/orchestrator.sqlite` 里 `decision.kind=accept`、`ticketId` 非空、`outbox.status=sent`。
 
-## 8. 常见故障
+## 8. 同一 thread 的后续消息怎么处理
+
+maildrop 的 thread 由消息里的 `thread` 字段决定（缺省时用消息 `id`），所以**同一个 `thread` 投第二条消息，并不会被当成重复丢弃**，但也不一定开新一轮。判据只有一条：这个 Trigger 有没有被某个 ticket 拥有。三种状态分别处理：
+
+| 该 thread 的状态 | 第二条消息的归属 | 是否产生新 candidate |
+|------------------|------------------|----------------------|
+| 有进行中的 Eval（上一条还没被评估完） | 进入 `thread.pending`，等这个 Eval 结束后并入下一批 | 当前不产生；Eval 结束后才产生 |
+| 有 live ticket（在跑或等待报告） | 直接作为该 ticket 的 input，由它的 worker 决定 | 不产生（`orchestrator.followup` 事件，不进 Eval） |
+| ticket 已结束且不是被人工 stop | 立刻 resume 同一个 ticket，沿用原 Mandate | 不产生（无新 Eval、无新 ticket） |
+| 没有 ticket 拥有它（从未 accept、被 ignore、被 stop、被 handback） | 排队进 Eval | 产生 |
+
+三条容易踩的预期偏差：
+
+1. **一个 thread 同时只跑一个 Eval。** 这是刻意的串行语义（`docs/001-domain.md`：*At most one Eval runs on it at a time*），后续消息是**排队合并**，不是丢弃，也不是并发评估。
+2. **ticket 已结束时走 resume，不走 Eval。** resume 只投递输入，**不产生 acknowledgement**，所以 outbox 不会自动多一封回信；如果 worker 没有主动回信，日志里看起来就"没反应"。这不是消息被吞。
+3. **要真正开新一轮评估**，有三条正路：换一个 `thread`（等于新话题）；先 `stop` 掉现有 ticket（stop 之后的消息按"没有 ticket 拥有"走 Eval）；或从面板把这条消息送 Eval。原地重复发同 thread 消息只会进 ticket 或排队。
+
+另外注意 trigger id 是 `key('maildrop', <消息 id>)`：**同一 thread 用不同的 `id` 才是新消息**；复用同一个 `id` 会被判 `duplicate` 静默跳过（见 §9）。
+
+## 9. 常见故障
 
 | 现象 | 原因 | 处理 |
 |------|------|------|
@@ -138,7 +157,7 @@ credentials service (the web Models page writes it) or export it, and remove api
 | `no credential for provider route ...` | 环境变量没随进程注入 | 见 §5 |
 | outbox 空但 requests.jsonl 有行 | 模型只回了文本，没调用工具 → 没有决策/工单 | 确认端点确实返回 `tool_calls` 且 `finish_reason=tool_calls` |
 
-## 9. 清理
+## 10. 清理
 
 停掉 dsh 后删除 `<MAILDROP_DIR>` 与 `<STATE_DIR>` 即可；
 Session 记录在 `$DSH_HOME/sessions/<cwd hash>/<session id>/session.v4.jsonl.zstd`（zstd 压缩 JSONL，
