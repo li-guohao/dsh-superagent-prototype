@@ -371,6 +371,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
 | `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone` |
+| `src/sources/maildrop.ts` | The Maildrop kind and plugin entry (this fork), exported as `./maildrop-watch`: a filesystem mailbox Source needing no external account |
 | `src/sources/feishu-read.ts` | The `feishu/` reads of a Trigger's message, its root, parent and topic, and `feishuThreadContext`, which gives them to assessments with their images |
 | `src/sources/admission-context.ts` | The bounded window an assessment starts from: the first pages of a Trigger's Thread, read through its kind, and the messages around the Trigger |
 | `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |
@@ -397,7 +398,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
+`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled. This fork adds `src/sources/maildrop.ts`, exported as `./maildrop-watch` and inserted disabled the same way.
 
 ## Tests
 
@@ -408,6 +409,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
+| `tests/maildrop.spec.ts` | The Maildrop Source: poll order and cursor persistence, malformed files, and idempotent outbox delivery |
+| `tests/maildrop-e2e.spec.ts` | Round-3 integration: real inbox → real maildrop poll → real HTTP to a fake OpenAI-compatible endpoint → real outbox reply, with a replay-log proof the HTTP round-trip was genuine |
+| `tests/maildrop-harness.spec.ts` | Round-4 harness agent-loop: real Runtime with maildropKind, Thread keying, Admission gate (allowed sender match), Eval/route accept → Ticket creation → Worker assignment → OutboundMessage via sendMaildrop. Uses startRuntime fixture's harness plumbing; MasterAssessor LLM step is replaced by direct route() injection (fixture standard). |
+| `tests/maildrop-poll-loop.spec.ts` | Round-5 poll loop natural ingress: zero manual `runtime.receive()`, only watchMaildrop → pollMaildrop → source.receive naturally discovers inbox `.json` files → Runtime Eval → candidates, plus harness route accept → outbox reply. Timer is driven by `vi.useFakeTimers({ toFake: ['setTimeout'] })` + `vi.waitFor` to avoid flakiness. Mock boundary: harness route/accept is fixture injection (not real LLM). |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |

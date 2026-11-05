@@ -1,12 +1,44 @@
 # Example profile configuration ($DSH_HOME/profiles/<profile>/cordis.patch.yml).
-# Replace <placeholders> before first start; see docs/006-deployment.md.
+# Replace <placeholders> before first start; see docs/006-deployment.md
+# and docs/quickstart-maildrop.md.
 - id: webserver
   config:
     host: 127.0.0.1
     port: 3082
+
+# Required. Absolute, stable directory: holds orchestrator.sqlite, the lock file and the
+# master Session identity. A different path is effectively a different orchestrator.
 - id: dsh-superagent
   config:
     stateDir: <absolute path, for example /home/me/.dsh/state/superagent>
+
+# File-system mailbox Source: polls `inbox` every `pollSeconds`, replies land in `outbox`.
+# Both paths must already exist; only *.json files are picked up, in filename order.
+- id: dsh-superagent-maildrop
+  disabled: false
+  config:
+    inbox: <absolute path, for example /home/me/.dsh/maildrop/inbox>
+    outbox: <absolute path, for example /home/me/.dsh/maildrop/outbox>
+    pollSeconds: 2
+
+# Local fake LLM used by examples/fake_model_endpoint.py.
+# `apiKeyEnv` names an environment variable read from the *process* environment at request
+# time — never from this file. Export it when starting dsh (see docs/quickstart-maildrop.md).
+# The value below is a placeholder; do not put a real key in this file.
+- id: llm-pi-ai
+  config:
+    providers:
+      fake-local:
+        api: openai-completions
+        baseURL: http://127.0.0.1:18787/v1
+        apiKeyEnv: FAKE_LLM_KEY
+        models:
+          - id: any-model
+- id: agent-default-model
+  config:
+    provider: fake-local
+    model: any-model
+
 # Feishu is optional: uncomment to enable its Source, then set the bot's lark-cli on the Feishu Source.
 # - id: dsh-superagent-feishu
 #   disabled: false

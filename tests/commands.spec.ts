@@ -24,7 +24,9 @@ describe('account-isolated operations', () => {
   it('runs every command with its environment over the process environment, where undefined removes a variable', async () => {
     process.env.GH_TOKEN = 'personal'
     try {
-      const output = await new Commands(() => deployment, { GH_TOKEN: undefined, DSH_SUPERAGENT_PROBE: 'agent' }, new AbortController().signal).run('env', [])
+      // `env` is POSIX-only; node prints the same environment on every platform.
+      const output = await new Commands(() => deployment, { GH_TOKEN: undefined, DSH_SUPERAGENT_PROBE: 'agent' }, new AbortController().signal)
+        .run('node', ['-e', 'for (const [name, value] of Object.entries(process.env)) console.log(`${name}=${value}`)'])
       expect(output).toContain('DSH_SUPERAGENT_PROBE=agent')
       expect(output).not.toContain('GH_TOKEN=')
     } finally { delete process.env.GH_TOKEN }
@@ -172,8 +174,10 @@ it('says how to add the bot to a chat when Feishu answers that it is not a membe
 it('names only the program and how it ended when a command prints no diagnostics, never its arguments', async () => {
   const commands = new Commands(() => deployment, {}, new AbortController().signal)
   const secret = 'secret reply text'
-  await expect(commands.run('sh', ['-c', 'exit 3', secret])).rejects.toMatchObject({ message: 'sh exited with code 3', exitCode: 3 })
-  await expect(commands.run('sh', ['-c', 'kill -9 $$', secret])).rejects.toMatchObject({ message: 'sh was stopped by SIGKILL' })
+  // A plain nonzero exit is named the same on every platform; node needs no POSIX shell to be found.
+  await expect(commands.run('node', ['-e', 'process.exit(3)', secret])).rejects.toMatchObject({ message: 'node exited with code 3', exitCode: 3 })
+  // Signal-named exits (`sh was stopped by SIGKILL`) are a POSIX wait-status concept; Windows reports a plain exit code.
+  if (process.platform !== 'win32') await expect(commands.run('sh', ['-c', 'kill -9 $$', secret])).rejects.toMatchObject({ message: 'sh was stopped by SIGKILL' })
   await expect(commands.run('/no/such/program', ['secret reply text'])).rejects.toMatchObject({ message: 'program could not run: ENOENT' })
   // Timeouts kill the child with SIGTERM; Node's default error message would echo every argument.
   const timedOut = { killed: true, signal: 'SIGTERM', code: null, stderr: '',
@@ -191,7 +195,7 @@ it('reports failures as CliError with the code the CLI names and the exit status
   const aborted = Object.assign(new Error('The operation was aborted'), { name: 'AbortError', stderr: '' })
   expect(commandError(aborted)).toBe(aborted)
   const controller = new AbortController()
-  const running = new Commands(() => deployment, {}, controller.signal).run('sleep', ['5'])
+  const running = new Commands(() => deployment, {}, controller.signal).run('node', ['-e', 'setTimeout(() => {}, 5000)'])
   controller.abort()
   await expect(running).rejects.toMatchObject({ name: 'AbortError' })
   const commands = new Commands(() => deployment, {}, new AbortController().signal)
@@ -203,12 +207,13 @@ it('stops a running command when the signal of its work aborts, or the lifetime,
   const lifetime = new AbortController(), work = new AbortController()
   const commands = new Commands(() => deployment, {}, lifetime.signal)
   const started = Date.now()
-  const running = commands.withSignal(work.signal).run('sleep', ['5'])
+  // `sleep`/`echo` are POSIX-only; the same shapes come from node one-liners everywhere.
+  const running = commands.withSignal(work.signal).run('node', ['-e', 'setTimeout(() => {}, 5000)'])
   work.abort()
   await expect(running).rejects.toThrow()
   // Only commands bound to the aborted work signal stop.
-  expect(await commands.run('echo', ['still'])).toBe('still\n')
-  const other = commands.withSignal(new AbortController().signal).run('sleep', ['5'])
+  expect(await commands.run('node', ['-e', "console.log('still')"])).toBe('still\n')
+  const other = commands.withSignal(new AbortController().signal).run('node', ['-e', 'setTimeout(() => {}, 5000)'])
   lifetime.abort()
   await expect(other).rejects.toThrow()
   expect(Date.now() - started).toBeLessThan(4000)
