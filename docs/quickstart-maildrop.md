@@ -57,8 +57,10 @@ dsh --profile smoke --dump-config | grep -A2 dsh-superagent   # 能查到即装�
 
 当前 `no-repository` 的支持边界（Round 19 修复后实测）：
 
-- **能跑**：maildrop 触发 → orchestrator 首 turn 正常装配提示词 → `orchestrator_route` 的 accept/route 决策 → ticket 创建 → acknowledgement 出站。提示词里的 `DSH_SUPERAGENT_GITHUB_*` 变量会以空值列出；GitHub Source 的变量只在有仓库时有意义。
-- **不能跑**：GitHub Source 的仓库相关能力（轮询、链接、PR 上下文）在无仓库形态下不可用；worker 内的 `gh` 垫片会直接失败。**worker 执行仍未验证**：本轮真跑中 worker 在隔离工作目录写出了文件，但最后一步以 `turn/end=max-tokens` 结束，没有回到 DONE。
+- **能跑**：maildrop 触发 → orchestrator 首 turn 正常装配提示词 → `orchestrator_route` 的 accept/route 决策 → ticket 创建 → acknowledgement 出站（Round 19 真实验证过）。提示词里的 `DSH_SUPERAGENT_GITHUB_*` 变量会以空值列出；GitHub Source 的变量只在有仓库时有意义。
+- **不能跑**：GitHub Source 的仓库相关能力（轮询、链接、PR 上下文）在无仓库形态下不可用；worker 内的 `gh` 垫片会直接失败。
+- **修复位置**：Round 19 修的是 `src/sources/github.ts` 的 `environment.values` —— 无仓库形态直接返回空值集合，不再向提示词注入仓库环境变量；**不是**在 `repositoryAccess` 的报错点放宽校验（它仍要求需要仓库的调用方显式失败）。
+- **worker 端到端执行尚未验证**：Round 19 的 worker 在隔离工作目录写出了文件，但最后一步以 `turn/end=max-tokens` 结束，没有回到 DONE；Round 18 的 worker 未真正派发。两次都没有拿到 `completed`。
 
 ## 4. 启动假 LLM 端点
 
@@ -241,7 +243,10 @@ reasoning 吃光，`turn/end` 的 reason 是 `max-tokens` 且没有可见文本�
 注意 `maxTokens` 是**每个会话的输出上限**。要跑 maildrop → orchestrator 的路线决策，建议
 `maxTokens ≥ 256`（本轮实测 320 可用）：128 会在 `orchestrator_route` 的 tool-call JSON 中途截断，
 `turn/end` 的 reason 为 `max-tokens`，这一轮调用拿不到决策。16 只适合“只回一句”的连通性探针。
-同一上限也作用于 worker——320 够完成 route，但本轮 worker 的最后一步仍被 320 截断。
+
+同一上限也作用于 worker，而 worker 是多步任务：Round 19 实测 320 能在隔离目录写出文件，但最后一步仍被
+`max-tokens` 截断，没有收尾回复。因此跑 worker 建议 **≥800**（经验值，不是硬性保证）；具体需求取决于
+任务步数与工具输出长度，仍要以 session log 的 `turn/end` 为准。
 
 ## 11. 清理
 
