@@ -55,6 +55,11 @@ dsh --profile smoke --dump-config | grep -A2 dsh-superagent   # 能查到即装�
 
 `repositoryMode` 默认 `required`（要求仓库 + `gh`）。设为 `no-repository` 时，解析出来的 Deployment **不携带** `repository` 与 `github` 字段（不是空字符串占位），`gh` 垫片会直接失败而不是转发给真实 `gh`，worker 的 gitconfig 也不写 credential helper。名字里的 `no-repository` 是唯一判据；不声明它就必须配仓库，二者没有中间状态。
 
+当前 `no-repository` 的支持边界（Round 19 修复后实测）：
+
+- **能跑**：maildrop 触发 → orchestrator 首 turn 正常装配提示词 → `orchestrator_route` 的 accept/route 决策 → ticket 创建 → acknowledgement 出站。提示词里的 `DSH_SUPERAGENT_GITHUB_*` 变量会以空值列出；GitHub Source 的变量只在有仓库时有意义。
+- **不能跑**：GitHub Source 的仓库相关能力（轮询、链接、PR 上下文）在无仓库形态下不可用；worker 内的 `gh` 垫片会直接失败。**worker 执行仍未验证**：本轮真跑中 worker 在隔离工作目录写出了文件，但最后一步以 `turn/end=max-tokens` 结束，没有回到 DONE。
+
 ## 4. 启动假 LLM 端点
 
 ```bash
@@ -232,6 +237,11 @@ dsh headless --patch <overlay.yml> "Reply with REAL_OK only."
 
 overlay 里把 `reasoningEffort` 设为 `off`、`maxTokens` 压到 16。**若不关 thinking**，16 token 会被
 reasoning 吃光，`turn/end` 的 reason 是 `max-tokens` 且没有可见文本；这只是输出上限太小，不是链路故障。
+
+注意 `maxTokens` 是**每个会话的输出上限**。要跑 maildrop → orchestrator 的路线决策，建议
+`maxTokens ≥ 256`（本轮实测 320 可用）：128 会在 `orchestrator_route` 的 tool-call JSON 中途截断，
+`turn/end` 的 reason 为 `max-tokens`，这一轮调用拿不到决策。16 只适合“只回一句”的连通性探针。
+同一上限也作用于 worker——320 够完成 route，但本轮 worker 的最后一步仍被 320 截断。
 
 ## 11. 清理
 

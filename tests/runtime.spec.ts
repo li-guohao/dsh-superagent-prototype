@@ -854,6 +854,19 @@ it('accepts a deployment that declares itself repository-less, without inventing
   expect((await api('GET', 'state')).body).toMatchObject({ setup: { problem: null, accounts: null } })
 })
 
+it('composes the orchestrator prompt before its first model request without repository access', async () => {
+  const next = await restart({ repositoryMode: 'no-repository' }, { github: { repository: '', cli: '' } })
+  await next.ready
+  // Source kinds are normally registered by plugins that are not loaded in unit tests.
+  next.sources.register(githubKind)
+  // The main Session composes its system prompt before its first model request. A repository-less deployment
+  // documents the GitHub variables as unset instead of failing on the repository it does not declare.
+  const prompt = next.prompts.compose(next.prompts.current().config, 'orchestrator')
+  const github = prompt.split('\n').filter(line => line.startsWith('- DSH_SUPERAGENT_GITHUB_'))
+  expect(github).toHaveLength(5)
+  expect(github.every(line => line.includes('= ""'))).toBe(true)
+})
+
 it('reports each setup problem where the operator fixes it, and checks the agent CLI the way worker shells run it', async () => {
   const needs = async (place: string, code: string, values: Record<string, string>, accounts: Accounts = {}) => {
     const next = await restart({}, accounts)
