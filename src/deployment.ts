@@ -85,10 +85,16 @@ export function executable(name: string, path: string, exclude?: string): string
 }
 
 export type Probe = (argv: string[]) => Promise<string>
-/** Run startup checks through DSH's worker subprocess service with worker shims removed from PATH so a `gh` wrapper script reaches the real binary. */
-export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd: string, signal: AbortSignal): Probe {
+/**
+ * Run startup checks through DSH's worker subprocess service with worker shims removed from PATH so a `gh` wrapper script reaches the real binary.
+ * POSIX shells get the PATH through an `env` prefix; Windows has no `env` executable, so it goes through the subprocess environment instead.
+ */
+export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd: string, signal: AbortSignal,
+  platform: NodeJS.Platform = process.platform): Probe {
   const path = withoutDirectory(process.env.PATH ?? '', workerBin(stateDir))
-  return argv => runAsWorker(subprocess, ['env', `PATH=${path}`, ...argv], cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
+  const timeout = AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+  if (platform === 'win32') return argv => runAsWorker(subprocess, argv, cwd, timeout, { PATH: path })
+  return argv => runAsWorker(subprocess, ['env', `PATH=${path}`, ...argv], cwd, timeout)
 }
 
 const GithubUser = z.object({ login: z.string().regex(/^[A-Za-z0-9-]+$/), id: z.number().int().positive() })

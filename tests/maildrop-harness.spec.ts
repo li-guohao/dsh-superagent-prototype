@@ -166,6 +166,52 @@ describe('Round 4: harness agent-loop', () => {
     expect(replyContent.to).toBe(FROM)
   })
 
+  it('queues a second message on the same thread behind the running Eval instead of starting a concurrent one', async () => {
+    const first = receiveMaildrop(buildMessage('0030', '第一条：修复登录按钮'))
+    await host.runtime.idle()
+    const tk = threadKey(first.threads[0]!)
+
+    // 同一个 thread、不同消息 id：新消息必须是 stored，不能是 duplicate。
+    const second = maildropTrigger(buildMessage('0031', '第二条：补一句范围说明'), outbox)
+    expect(host.runtime.receive(second)).toBe('stored')
+    await host.runtime.idle()
+
+    // 串行语义：第二条只能排队，不能和第一条同时评估，也不能凭空多出一个 candidate。
+    const thread = host.runtime.store.threads.get(tk)!
+    expect(thread.evaluating!.triggerIds).toEqual([first.id])
+    expect(thread.pending).toContain(second.id)
+    expect(host.candidates()).toEqual([first.id])
+
+    // 第一条有结论后，排队的那条才开自己的 Eval（是排队，不是被吞）。
+    await host.route({ kind: 'accept', trigger_id: first.id, title: '修复登录按钮点击无反应', worktree_name: 'fix-login-button', acknowledgement: '收到。' })
+    await host.runtime.idle()
+    expect(host.candidates()).toContain(second.id)
+  })
+
+  it('resumes the ended ticket for a follow-up on its thread, without a new candidate', async () => {
+    const first = receiveMaildrop(buildMessage('0040', '第一条：修复登录按钮'))
+    await host.runtime.idle()
+    const accepted = await host.route({ kind: 'accept', trigger_id: first.id, title: '修复登录按钮点击无反应', worktree_name: 'fix-login-button', acknowledgement: '收到。' })
+    await host.runtime.idle()
+    const ticketId = (accepted.ticket as { ticket_id: string }).ticket_id
+    await host.runTool(`worker-${ticketId}`, 'orchestrator_report', { state: 'ready', summary: '已修复' })
+    await host.runtime.idle()
+    const ended = host.runtime.store.tickets.get(ticketId)!
+    expect(ended.ended).toBeDefined()
+    expect(ended.assignments.at(-1)!.state).toBe('ended')
+
+    // 已结束的 ticket 仍拥有它 thread 上的后续消息：走 resume，不开新 Eval。
+    const second = maildropTrigger(buildMessage('0041', '第二条：还有一个边界情况'), outbox)
+    expect(host.runtime.receive(second)).toBe('stored')
+    await host.runtime.idle()
+    const resumed = host.runtime.store.tickets.get(ticketId)!
+    expect(resumed.ended).toBeUndefined()
+    expect(resumed.assignments).toHaveLength(2)
+    expect(resumed.assignments.at(-1)!.state).toBe('running')
+    expect(resumed.inputs.map(input => input.kind)).toContain('resumed')
+    expect(host.candidates()).toEqual([first.id])
+  })
+
   it('Admission gate rejects disallowed source → ignore decision', async () => {
     // 这条 source 不在 policy.sources.maildrop.allowed 列表里 → 应该被 gate 拒绝
     // 我们把 trigger 的 actor.id 改成 disallowed 地址

@@ -39,6 +39,23 @@
     provider: fake-local
     model: any-model
 
+# Real DeepSeek route (optional alternative to the fake local endpoint above).
+# There is no `api:` field for this adapter: the base bundle already mounts
+# `@deepseek-ai/dsh-llm-deepseek`, whose provider route is `deepseek-official`
+# (Messages wire format, default baseURL https://api.deepseek.com/anthropic).
+# This row only names the credential reference; the key itself never lives in
+# this file. Export `DEEPSEEK_API_KEY` in the process that starts dsh, or store
+# it through the credentials service (the web Models page writes it) — see
+# docs/quickstart-maildrop.md §10.
+# Uncomment this row plus the `agent-default-model` row below to switch over.
+# - id: llm-deepseek
+#   config:
+#     apiKeyEnv: DEEPSEEK_API_KEY
+# - id: agent-default-model
+#   config:
+#     provider: deepseek-official
+#     model: deepseek-flash
+
 # Feishu is optional: uncomment to enable its Source, then set the bot's lark-cli on the Feishu Source.
 # - id: dsh-superagent-feishu
 #   disabled: false

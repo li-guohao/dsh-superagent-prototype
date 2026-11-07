@@ -85,7 +85,7 @@ const OTHER = () => join(directory, 'other-gh')
 const BOT = () => join(directory, 'lark-bot')
 const HELPERS = 'git config -z --show-origin --get-all credential.https://github.com.helper'
 const SCOPED = 'git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$'
-const subprocess = { spawn: vi.fn((spec: { argv: readonly string[] }) => {
+const subprocess = { spawn: vi.fn((spec: { argv: readonly string[]; env?: Record<string, string> }) => {
   // Strip leading `env` and `KEY=VALUE` arguments before looking up the command response.
   const argv = [...spec.argv]
   while (argv[0] === 'env' || /^[A-Z_]+=/.test(argv[0] ?? '')) argv.shift()
@@ -854,6 +854,19 @@ it('accepts a deployment that declares itself repository-less, without inventing
   expect((await api('GET', 'state')).body).toMatchObject({ setup: { problem: null, accounts: null } })
 })
 
+it('composes the orchestrator prompt before its first model request without repository access', async () => {
+  const next = await restart({ repositoryMode: 'no-repository' }, { github: { repository: '', cli: '' } })
+  await next.ready
+  // Source kinds are normally registered by plugins that are not loaded in unit tests.
+  next.sources.register(githubKind)
+  // The main Session composes its system prompt before its first model request. A repository-less deployment
+  // documents the GitHub variables as unset instead of failing on the repository it does not declare.
+  const prompt = next.prompts.compose(next.prompts.current().config, 'orchestrator')
+  const github = prompt.split('\n').filter(line => line.startsWith('- DSH_SUPERAGENT_GITHUB_'))
+  expect(github).toHaveLength(5)
+  expect(github.every(line => line.includes('= ""'))).toBe(true)
+})
+
 it('reports each setup problem where the operator fixes it, and checks the agent CLI the way worker shells run it', async () => {
   const needs = async (place: string, code: string, values: Record<string, string>, accounts: Accounts = {}) => {
     const next = await restart({}, accounts)
@@ -864,10 +877,16 @@ it('reports each setup problem where the operator fixes it, and checks the agent
   await needs('github', 'repositoryReadOnly', { account: 'agent-bot', repository: 'acme/widgets' })
   answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":true}\n'
   // The agent CLI runs in the workers' environment: without the shims on PATH.
-  const check = subprocess.spawn.mock.calls.map(([spec]) => spec.argv).find(argv => argv.includes(AGENT()))!
-  expect(check[0]).toBe('env')
-  expect(check[1]!.startsWith('PATH=')).toBe(true)
-  expect(check[1]!.slice('PATH='.length).split(delimiter)).not.toContain(join(directory, 'worker-bin'))
+  const check = subprocess.spawn.mock.calls.map(([spec]) => spec).find(spec => spec.argv.includes(AGENT()))!
+  // Windows has no `env` executable, so its probe hands PATH to the subprocess environment instead of an argv prefix.
+  if (process.platform === 'win32') {
+    expect(check.argv[0]).toBe(AGENT())
+    expect((check.env?.PATH ?? '').split(delimiter)).not.toContain(join(directory, 'worker-bin'))
+  } else {
+    expect(check.argv[0]).toBe('env')
+    expect(check.argv[1]!.startsWith('PATH=')).toBe(true)
+    expect(check.argv[1]!.slice('PATH='.length).split(delimiter)).not.toContain(join(directory, 'worker-bin'))
+  }
   const valid = { ...answers }
   // git older than 2.32 ignores GIT_CONFIG_GLOBAL and reads the operator's configuration.
   answers = { ...valid, [HELPERS]: 'file:/home/me/.gitconfig\0!gh auth git-credential\0' }

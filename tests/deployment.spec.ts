@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, repositoryAccess, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, executable, machineOf, repositoryAccess, resolveDeployment, resolveFeishuBot, workerProbe, type Machine, type Probe } from '../src/deployment.ts'
+import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
+import { withoutDirectory } from '../src/infra/environment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -98,5 +100,33 @@ describe.skipIf(process.platform === 'win32')('setup', () => {
     await refuses('feishuNoBot')
     program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
     await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+  })
+})
+
+describe('worker probe', () => {
+  /** Records what the probe spawns without starting a process, so this test runs on every platform. */
+  const recorder = () => {
+    const calls: { argv: string[]; env?: Record<string, string> }[] = []
+    const subprocess = {
+      spawn: (spec: { argv: string[]; env?: Record<string, string> }) => {
+        calls.push({ argv: spec.argv, ...spec.env ? { env: spec.env } : {} })
+        return { done: Promise.resolve({ exitCode: 0 }), collected: { stdout: { readFrom: () => ({ text: '' }) }, stderr: { readFrom: () => ({ text: '' }) } } }
+      },
+    } as unknown as SubprocessRuntime
+    return { calls, subprocess }
+  }
+  it('passes PATH through the subprocess environment on Windows, where no env executable exists', async () => {
+    const { calls, subprocess } = recorder()
+    const state = join(dir, 'state')
+    await workerProbe(subprocess, state, dir, AbortSignal.timeout(5000), 'win32')(['gh', 'api', 'user'])
+    expect(calls[0]!.argv).toEqual(['gh', 'api', 'user'])
+    expect(calls[0]!.env).toEqual({ PATH: withoutDirectory(process.env.PATH ?? '', join(state, 'worker-bin')) })
+  })
+  it('keeps the POSIX env prefix unchanged', async () => {
+    const { calls, subprocess } = recorder()
+    const state = join(dir, 'state')
+    await workerProbe(subprocess, state, dir, AbortSignal.timeout(5000), 'linux')(['gh', 'api', 'user'])
+    expect(calls[0]!.argv).toEqual(['env', `PATH=${withoutDirectory(process.env.PATH ?? '', join(state, 'worker-bin'))}`, 'gh', 'api', 'user'])
+    expect(calls[0]!.env).toBeUndefined()
   })
 })
