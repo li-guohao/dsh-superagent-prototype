@@ -87,6 +87,7 @@ type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
   joined?: Record<string, string>; joining?: Record<string, string>
   joinError?: string
+  backlog: ApiResponse<'GET overview'>['backlog']
   settings: Settings; revisions: Record<string, number>
   prompts: PromptsView
   tickets: { open: TicketRow[]; ended: TicketRow[] }; ticketDetails: Record<string, TicketPageView>
@@ -198,6 +199,7 @@ const overviewView = (): ApiResponse<'GET overview'> => {
     person: server.person, executor: { running: 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers, idle: 1 },
     flow: { received: 12, filtered: 2, triggers: 10, judged: 5, accepted: 1, evaluating: 0,
       dropped: server.dropped.filter(item => item.dropped.at >= dayAgo()).length },
+    backlog: server.backlog,
     policyVersion: 'abcdef1234567890',
   }
 }
@@ -248,6 +250,11 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
+    backlog: { at: '2026-09-23T00:05:00Z', instance: { id: 'master', pid: 1, bootedAt: '2026-09-22T00:00:00Z' },
+      totals: { threads: 2, waiting: 1, evaluating: 0, undelivered: 1, triggers: 1 },
+      items: [
+        { thread: 'feishu:oc_1:om_root', status: 1, since: '2026-09-23T00:00:00Z', ageMs: 300_000, triggers: 1 },
+        { thread: 'github:9', status: 3, since: '2026-09-23T00:03:00Z', ageMs: 120_000, triggers: 0, eval: 'v9' }] },
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },

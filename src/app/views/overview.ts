@@ -1,8 +1,9 @@
 /** Overview view: active system problems, tickets awaiting human action, executor load, and 24-hour trigger flow. */
 import { reasonText, ticketStage, type Decision, type Thread } from '../../core/index.ts'
-import type { Health } from '../../sources/host.ts'
+import { health, type Health, type HealthData } from '../../sources/host.ts'
 import type { SetupProblem } from '../../setup.ts'
 import { anyoneAllowed } from '../../policy.ts'
+import { THREAD_STATUS } from '../codes.ts'
 import type { Store } from '../store.ts'
 import { awaitingEval, dayAgo, newestFirst, ownersOf, snapshot, threadSummary, type ViewHost } from './records.ts'
 import { sourceHealth, type HealthMap } from './sources.ts'
@@ -30,6 +31,25 @@ export function evalsHealth(store: Store, now = Date.now()): Health {
   const latest = open[0]!.decision
   return { state: 'error', at: latest.at, detail: `${open.length} Eval(s) unavailable in the last hour without a later judgement; `
     + `the latest on ${latest.threadKey}: ${reasonText(latest.reason)}` }
+}
+/** Renders a duration for the fixed English health text, coarse enough to read at a glance. */
+const duration = (ms: number): string => ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60_000)}m`
+/**
+ * Reports the assessment backlog as the `assessor` health entry. Counts are always reported, but only the oldest
+ * waiting Thread or undelivered candidate past `alarmSeconds` degrades the verdict: a backlog inside the alarm is
+ * normal queueing, and alarming on any waiting Thread would flap the entry on every single arrival.
+ */
+export function assessorHealth(store: Store, alarmSeconds: number, now = new Date().toISOString()): Health {
+  const status = store.read.assessmentStatus(now)
+  // `items` is ordered by age, so the first waiting or undelivered entry is the oldest of either kind.
+  const oldest = status.items.find(item => item.status === THREAD_STATUS.WAITING || item.status === THREAD_STATUS.UNDELIVERED)
+  const limit = duration(alarmSeconds * 1000)
+  const data: HealthData = { instance: status.instance, waiting: status.totals.waiting, undelivered: status.totals.undelivered,
+    alarmSeconds, ...oldest?.ageMs === undefined ? {} : { oldestAgeMs: oldest.ageMs } }
+  const values = { waiting: String(status.totals.waiting), undelivered: String(status.totals.undelivered), limit }
+  if (oldest?.ageMs === undefined || oldest.ageMs <= alarmSeconds * 1000)
+    return { ...health('ready', 'assessorReady', values), data }
+  return { ...health('error', 'assessorStalled', { ...values, age: duration(oldest.ageMs) }), at: oldest.since, data }
 }
 /**
  * Builds the operator overview: active system problems, tickets awaiting human action, executor load, and 24-hour trigger flow.
@@ -74,6 +94,7 @@ export function overview(host: ViewHost, health: HealthMap, policyVersionValue: 
     executor: { ...load, maxWorkers: settings.executor.maxWorkers, idle: open.filter(ticket => ticketStage(ticket).stage === 'idle').length },
     flow: { received, filtered, triggers: received - filtered, judged: judgement.judged, accepted: judgement.accepted,
       evaluating: evaluating.length, dropped: store.read.droppedSince(since) },
+    backlog: store.read.assessmentStatus(now),
     policyVersion: policyVersionValue,
   }
 }

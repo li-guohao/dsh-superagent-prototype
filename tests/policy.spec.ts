@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+
 import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
@@ -253,7 +254,7 @@ describe('settings migration', () => {
       paused: true,
       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
-      eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
+      eval: { mode: 'auto', timeoutSeconds: 90, alarmSeconds: 240, model: { provider: 'p', model: 'm' } },
       executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
@@ -483,4 +484,10 @@ describe('bots and events without a sender', () => {
       ['comments', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['ci', { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false }]])
   })
+})
+
+it('defaults the assessment alarm for settings saved before the field existed', () => {
+  // Old rows carry only the fields they knew; a missing alarm must take its default rather than disable the check.
+  const settings = SettingsSchema.parse({ eval: { mode: 'observe', timeoutSeconds: 120, model: null } })
+  expect(settings.eval.alarmSeconds).toBe(240)
 })

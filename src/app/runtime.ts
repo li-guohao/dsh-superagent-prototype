@@ -25,7 +25,7 @@ import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
 import { Store } from './store.ts'
-import { evalsHealth } from './views/overview.ts'
+import { assessorHealth, evalsHealth } from './views/overview.ts'
 import { TextCache } from './cache.ts'
 import { Effects } from './effects.ts'
 import { Prompts } from './prompts.ts'
@@ -153,7 +153,10 @@ export class Runtime extends Service implements SourceHost {
         } })
       // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
       const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last hour' })
-      const evaluateDue = () => { engine.evaluateDue(); evals.set(evalsHealth(store)) }
+      // The `assessor` entry reads the backlog only: it degrades when waiting or undelivered Threads pass `eval.alarmSeconds`.
+      const alarmSeconds = () => store.settings().eval.alarmSeconds
+      const assessorStatus = board.claim('assessor', assessorHealth(store, alarmSeconds()))
+      const evaluateDue = () => { engine.evaluateDue(); evals.set(evalsHealth(store)); assessorStatus.set(assessorHealth(store, alarmSeconds())) }
       const passes = this.passes = new Passes({ engine: { receive: trigger => engine.receive(trigger), evaluateDue }, effects,
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },

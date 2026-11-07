@@ -14,9 +14,21 @@ export const HEALTH_TEXT = {
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
   pollFailures: '{count} consecutive failed polls; last: {error}',
+  assessorReady: 'No Thread is past the {limit} assessment alarm',
+  assessorStalled: '{waiting} waiting and {undelivered} undelivered; the oldest has waited {age}, past the {limit} alarm',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT
-export type Health = { state: 'starting' | 'ready' | 'paused' | 'error'; detail: string; at?: string; code?: HealthCode; values?: Record<string, string> }
+/** Numbers beside the fixed text, so a service script reads the same facts as the panel without parsing prose. */
+export type HealthData = {
+  /** The process that took the reading, so a stale snapshot is never mistaken for the current one. */
+  instance?: { id?: string; pid: number; bootedAt: string }
+  waiting?: number
+  undelivered?: number
+  oldestAgeMs?: number
+  alarmSeconds?: number
+}
+export type Health = { state: 'starting' | 'ready' | 'paused' | 'error'; detail: string; at?: string; code?: HealthCode;
+  values?: Record<string, string>; data?: HealthData }
 export function health(state: Health['state'], code: HealthCode, values: Record<string, string> = {}): Health {
   return { state, detail: fill(HEALTH_TEXT[code], values), code, ...Object.keys(values).length ? { values } : {} }
 }

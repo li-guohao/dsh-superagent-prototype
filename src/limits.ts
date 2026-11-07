@@ -3,6 +3,7 @@ export const LIMITS = {
   ruleName: 100,
   ruleInstruction: 2000,
   evalTimeoutSeconds: { min: 30, max: 600 },
+  evalAlarmSeconds: { min: 30, max: 3600 },
   maxWorkers: { min: 1, max: 16 },
   prepareCommand: 4000,
   promptMaxChars: { min: 1000, max: 1_000_000 },

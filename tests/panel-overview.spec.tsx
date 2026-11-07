@@ -10,7 +10,8 @@ it('leads the overview with the pending Tickets, then problems, the last day and
   await mount()
   expect(tab(zh['tab.overview']).getAttribute('aria-selected')).toBe('true')
   expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概览', '来源', '触发', '评估', '执行', '设置'])
-  expect(all('.dt-section-title').map(title => title.textContent)).toEqual(['待处理工单2', '系统问题2', '过去 24 小时详情 ›', '执行器详情 ›'])
+  expect(all('.dt-section-title').map(title => title.textContent)).toEqual(['待处理工单2', '系统问题2', '过去 24 小时详情 ›', '评估积压2',
+    '执行器详情 ›'])
   expect(all('.dt-cards .dt-ticket-stage').map(item => item.textContent)).toEqual(['待回答', '待处理失败'])
   expect(all('.dt-cards .dt-att-what').map(item => item.textContent)).toEqual(['飞书 来源异常', '评估未完成：这个文案好奇怪'])
   // Actions sit below the title and Threads, apart from the stage, each with its icon.
@@ -18,7 +19,8 @@ it('leads the overview with the pending Tickets, then problems, the last day and
     && [...row.querySelectorAll('.dt-ticket-actions button, .dt-ticket-actions a')].every(action => action.querySelector('svg')))).toBe(true)
   expect(text()).toContain('来源会在每次轮询时自动重试')
   expect(text()).toContain('需要确认按钮颜色')
-  expect(all('.dt-stat').map(stat => stat.textContent)).toEqual(['到达12', '被过滤2', '已评估5', '接单或续做1', '执行中2 / 3', '排队0', '等待新触发1'])
+  expect(all('.dt-stat').map(stat => stat.textContent)).toEqual(['到达12', '被过滤2', '已评估5', '接单或续做1', '等待中1', '未投递1',
+    '评估中0', '触发1', '执行中2 / 3', '排队0', '等待新触发1'])
   expect(all('.dt-chip').map(chip => chip.textContent)[0]).toBe('GitHub#42CI 失败1')
   expect(document.querySelector('.dt-chip-problem')?.textContent).toBe('CI 失败1')
   expect(document.querySelector<HTMLAnchorElement>('a.dt-chip-link')?.href).toBe('https://github.com/acme/widgets/pull/42')
@@ -126,10 +128,11 @@ it('words a refused retry in the interface language by its code', async () => {
 it('shows the overview in English', async () => {
   await mount(en)
   expect(all('.dt-section-title').map(title => title.textContent)).toEqual([`${en.pendingTickets}2`, `${en.problems}2`,
-    `${en.lastDay}${en.details}`, `${en['term.executor']}${en.details}`])
+    `${en.lastDay}${en.details}`, `${en.assessmentBacklog}2`, `${en['term.executor']}${en.details}`])
   expect(all('.dt-cards .dt-ticket-stage').map(item => item.textContent)).toEqual([en['stage.answer'], en['stage.failed']])
   expect(all('.dt-stat-label').map(label => label.textContent)).toEqual([en.flowReceivedLabel, en.flowFilteredLabel, en.flowJudgedLabel,
-    en.flowAcceptedLabel, en.executingLabel, en.queuedLabel, en.idleLabel])
+    en.flowAcceptedLabel, en.backlogWaiting, en.backlogUndelivered, en.backlogEvaluating, en.backlogTriggers, en.executingLabel, en.queuedLabel,
+    en.idleLabel])
 })
 
 it('lists the unavailable Evals one by one, without the health entry that counts them as a failure of dsh-superagent', async () => {
@@ -156,4 +159,25 @@ it('says when no Source is on, an Eval is past its deadline or a message keeps f
   await click(tab(zh['tab.overview']))
   await click('评估超时未决定：#9 迟迟未决')
   expect(server.requests.some(request => request.path.startsWith('threads/github:9'))).toBe(true)
+})
+
+it('shows the assessment backlog per Thread with its readable status, age and Triggers, and offers no action on it', async () => {
+  await mount()
+  expect(all('.dt-section-title').map(title => title.textContent)).toContain(`${zh.assessmentBacklog}2`)
+  expect(all('.dt-stat-label').map(label => label.textContent)).toContain(zh.backlogWaiting)
+  expect(all('.dt-backlog thead th').map(head => head.textContent)).toEqual([zh.backlogThread, zh.backlogStatus, zh.backlogAge,
+    zh.backlogTriggers])
+  const rows = all('.dt-backlog tbody tr')
+  const cells = (row: HTMLElement) => [...row.querySelectorAll('td')].map(cell => cell.textContent ?? '')
+  expect(rows.length).toBe(2)
+  // The readable wording keeps the raw code beside it, so a script and a person read the same row.
+  expect(cells(rows[0]!).slice(0, 2)).toEqual(['feishu:oc_1:om_root', `${zh['threadStatus.1']} (1)`])
+  expect(cells(rows[0]!)[2]).not.toBe('')
+  expect(cells(rows[0]!)[3]).toBe('1')
+  expect(cells(rows[1]!).slice(0, 2)).toEqual(['github:9', `${zh['threadStatus.3']} (3)`])
+  // The only controls are the Thread links: nothing here can change what the assessor does.
+  expect(all('.dt-backlog button').length).toBe(2)
+  const before = server.requests.filter(request => request.method === 'POST').length
+  await click(rows[0]!.querySelector('button')!)
+  expect(server.requests.filter(request => request.method === 'POST').length).toBe(before)
 })

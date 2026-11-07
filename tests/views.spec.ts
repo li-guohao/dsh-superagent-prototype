@@ -12,6 +12,8 @@ import { basisFacts, ticketDetail } from '../src/app/views/tickets.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
 import { droppedReplies, sourcesStatus } from '../src/app/views/sources.ts'
 import { overview } from '../src/app/views/overview.ts'
+import * as overviewView from '../src/app/views/overview.ts'
+import type { Health } from '../src/sources/host.ts'
 import { markdown, plain } from '../src/app/views/text.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
 import { KV } from '../src/kv.ts'
@@ -319,3 +321,64 @@ it('reads each ticket a page\'s follow-ups reached once, and nothing for a messa
   expect(followupOwners(store.triggers.get('f3')!, records)).toEqual([])
   expect([records.tickets.get, records.threads.get].map(read => read.mock.calls.length)).toEqual([0, 0])
 })
+
+const NOW = '2026-01-01T00:10:00Z'
+type AssessorHealth = Health & { data?: { instance?: { id?: string; pid: number; bootedAt: string }; waiting?: number
+  undelivered?: number; oldestAgeMs?: number; alarmSeconds?: number } }
+/** Read through a cast so the red run fails on an assertion here instead of on a missing export. */
+const assessor = () => (overviewView as unknown as {
+  assessorHealth?: (store: Store, alarmSeconds: number, now?: string) => AssessorHealth }).assessorHealth
+/** One waiting Thread (intake at `at`), one undelivered Eval and one Eval whose candidate was delivered. */
+function backlog() {
+  store.set(KV.runtime.masterId, 'orchestrator-test')
+  store.triggers.save(message('b1', { source: 'feishu', id: 'ou_alice' }))
+  store.triggers.saveDisposition('b1', { fanout: [], at: '2026-01-01T00:00:00Z' })
+  store.threads.save({ key: 'feishu:waiting', ref: { source: 'feishu', id: 'waiting' }, createdAt: at, subscriptions: [],
+    correlated: [], pending: ['b1'], meta: {} })
+  const evaluation = { id: 'v1', threadKey: 'github:undelivered', triggerIds: ['b2'], strength: 'explicit' as const,
+    actor: { source: 'github', id: 'alice' }, basis: { via: 'addressed' as const, addressed: 'mention' as const },
+    policyVersion: 'v1', startedAt: '2026-01-01T00:05:00Z', deadline: '2026-01-01T00:07:00Z' }
+  store.threads.save({ key: 'github:undelivered', ref: { source: 'github', id: 'undelivered' }, createdAt: at, subscriptions: [],
+    correlated: [], pending: [], evaluating: evaluation, meta: {} })
+  store.threads.save({ key: 'github:delivered', ref: { source: 'github', id: 'delivered' }, createdAt: at, subscriptions: [],
+    correlated: [], pending: [],
+    evaluating: { ...evaluation, id: 'v2', threadKey: 'github:delivered', startedAt: '2026-01-01T00:09:00Z',
+      delivered: '2026-01-01T00:09:30Z' }, meta: {} })
+}
+
+it('degrades the assessment health only past the configured alarm, reporting counts and the instance either way', () => {
+  const host = views()
+  expect(typeof assessor()).toBe('function')
+  backlog()
+  const status = assessor()!(host.store, 240, NOW)
+  // The oldest waiting Thread (ten minutes) is what decides the verdict; the counts are reported regardless.
+  expect(status).toMatchObject({ state: 'error', code: 'assessorStalled', at: '2026-01-01T00:00:00Z',
+    values: { waiting: '1', undelivered: '1', age: '10m', limit: '4m' } })
+  expect(status.data).toMatchObject({ waiting: 1, undelivered: 1, oldestAgeMs: 600_000, alarmSeconds: 240,
+    instance: { id: 'orchestrator-test', pid: process.pid } })
+  expect(status.data?.instance?.bootedAt).toEqual(expect.any(String))
+})
+
+it('keeps an assessment backlog inside the alarm normal while reporting its counts', () => {
+  const host = views()
+  expect(typeof assessor()).toBe('function')
+  store.triggers.save(message('b3', { source: 'feishu', id: 'ou_alice' }))
+  store.triggers.saveDisposition('b3', { fanout: [], at: '2026-01-01T00:09:00Z' })
+  store.threads.save({ key: 'feishu:fresh', ref: { source: 'feishu', id: 'fresh' }, createdAt: at, subscriptions: [],
+    correlated: [], pending: ['b3'], meta: {} })
+  const status = assessor()!(host.store, 240, NOW)
+  expect(status).toMatchObject({ state: 'ready', code: 'assessorReady', values: { waiting: '1', undelivered: '0' } })
+  expect(status.data).toMatchObject({ waiting: 1, undelivered: 0, oldestAgeMs: 60_000, alarmSeconds: 240 })
+})
+
+it('adds the assessment backlog to the overview, one entry per active Thread', () => {
+  const host = views()
+  backlog()
+  const payload = overview(host, {}, 'v1', load) as unknown as { backlog?: { totals?: Record<string, number>
+    items?: { thread: string; status: number; triggers: number; ageMs?: number }[] } }
+  expect(payload.backlog).toBeDefined()
+  expect(payload.backlog!.totals).toEqual({ threads: 3, waiting: 1, evaluating: 1, undelivered: 1, triggers: 1 })
+  expect(payload.backlog!.items!.map(item => [item.thread, item.status, item.triggers])).toEqual([
+    ['feishu:waiting', 1, 1], ['github:undelivered', 3, 0], ['github:delivered', 2, 0]])
+})
+

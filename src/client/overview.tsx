@@ -5,7 +5,7 @@ import { Button, Icon } from './controls.tsx'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { TicketLine } from './rows.tsx'
-import { healthText, localized, reasonLabel, valueLabel, readableMarkers } from './text.ts'
+import { healthText, localized, reasonLabel, valueLabel, readableMarkers, when } from './text.ts'
 import { CheckSetupButton, ConfirmButton, Hint, LoadState, Section, SetupMessage } from './widgets.tsx'
 
 function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () => Promise<void> }) {
@@ -90,6 +90,25 @@ export function OverviewPage() {
         {stat(t('flowAcceptedLabel'), data.flow.accepted, { page: 'eval', query: { window: '24h' } })}
         {data.flow.dropped > 0 && stat(t('flowDroppedLabel'), data.flow.dropped, { page: 'source' })}
       </div>
+    </Section>
+    <Section title={t('assessmentBacklog')} count={data.backlog.items.length}>
+      {/* Read-only: the counts and rows describe the backlog, and the only controls open a Thread. */}
+      <div className="dt-stats">
+        {stat(t('backlogWaiting'), data.backlog.totals.waiting)}
+        {stat(t('backlogUndelivered'), data.backlog.totals.undelivered)}
+        {stat(t('backlogEvaluating'), data.backlog.totals.evaluating)}
+        {stat(t('backlogTriggers'), data.backlog.totals.triggers)}
+      </div>
+      {data.backlog.items.length ? <table className="dt-table dt-backlog">
+        <thead><tr><th>{t('backlogThread')}</th><th>{t('backlogStatus')}</th><th>{t('backlogAge')}</th><th>{t('backlogTriggers')}</th></tr></thead>
+        <tbody>{data.backlog.items.map(item => <tr key={item.thread}>
+          {/* The readable wording keeps the raw code beside it, so a person and a script read the same row. */}
+          <td><button type="button" className="dt-open dt-mono" onClick={() => navigate({ page: 'trigger', id: item.thread })}>{item.thread}</button></td>
+          <td>{valueLabel(t, 'threadStatus', String(item.status))} <span className="dt-mono">({item.status})</span></td>
+          <td>{when(item.since, t('lang'))}</td>
+          <td>{item.triggers}</td>
+        </tr>)}</tbody>
+      </table> : <Hint>{t('backlogNone')}</Hint>}
     </Section>
     <Section title={t('term.executor')} action={more({ page: 'execution' })}>
       {/* Pauses surface in `problems` above, so Executor counts render the same in both states; while setup waits, nothing runs. */}
