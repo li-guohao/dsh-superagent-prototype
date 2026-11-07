@@ -1,7 +1,39 @@
 /** Read-only Store queries for views, tools, and Source polling. */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import type { Decision, Thread, Trigger } from '../core/index.ts'
+import { KV } from '../kv.ts'
+import { THREAD_STATUS, type ThreadStatusCode } from './codes.ts'
 import type { Dropped, Receipt, TimelinePlace } from './store.ts'
+
+/** When this process loaded the reads; stable per boot, so a snapshot can be attributed to the process that produced it. */
+const BOOTED_AT = new Date().toISOString()
+
+export interface InstanceIdentity {
+  /** Persisted deployment identity (`KV.runtime.masterId`); absent until the Runtime writes it. */
+  id?: string
+  pid: number
+  bootedAt: string
+}
+
+/** One active Thread as the assessment backlog sees it. */
+export interface ThreadStatus {
+  thread: string
+  status: ThreadStatusCode
+  /** The timestamp `ageMs` counts from: the oldest pending intake, or the running Eval's start. */
+  since?: string
+  ageMs?: number
+  /** Triggers still waiting in this Thread's `pending`. */
+  triggers: number
+  /** The running Eval, when the Thread is evaluating (delivered or not). */
+  eval?: string
+}
+
+export interface AssessmentStatus {
+  at: string
+  instance: InstanceIdentity
+  totals: { threads: number; waiting: number; evaluating: number; undelivered: number; triggers: number }
+  items: ThreadStatus[]
+}
 
 export function storeReads(db: DatabaseSync) {
   const values = <T>(sql: string, ...parameters: SQLInputValue[]): T[] => db.prepare(sql).all(...parameters).map(row => JSON.parse(String(row.value)) as T)
@@ -77,5 +109,48 @@ export function storeReads(db: DatabaseSync) {
     ? values('SELECT value FROM thread WHERE subscribed = ? ORDER BY rowid', source)
     // Force the partial index so SQLite does not scan the entire table in rowid order.
     : values('SELECT value FROM thread INDEXED BY thread_subscribed WHERE subscribed IS NOT NULL ORDER BY rowid'),
+  /**
+   * One entry per active Thread, oldest first: waiting in `pending` (status 1), evaluating with its candidate delivered
+   * (status 2), or evaluating with `delivered` missing (status 3, which never expires). `ageMs` counts from the oldest
+   * pending intake (`disposition.at`, not `trigger.at`: polled history reaches back the Source's horizon and would read
+   * as a backlog that never existed) or from the Eval's start.
+   *
+   * Cost: one scan over `thread WHERE active = 1` using the existing partial index; the pending lookup is a correlated
+   * subquery evaluated only for those rows, so neither the whole `thread` table nor `disposition` is scanned wholesale.
+   */
+  assessmentStatus: (now = new Date().toISOString()): AssessmentStatus => {
+    const rows = db.prepare(`SELECT t.key AS thread,
+        json_extract(t.value, '$.evaluating.id') AS eval,
+        json_extract(t.value, '$.evaluating.delivered') AS delivered,
+        json_extract(t.value, '$.evaluating.startedAt') AS startedAt,
+        json_array_length(t.value, '$.pending') AS pending,
+        (SELECT MIN(json_extract(d.value, '$.at')) FROM json_each(t.value, '$.pending') AS p JOIN disposition d ON d.id = p.value) AS oldest
+      FROM thread t WHERE t.active = 1 ORDER BY t.rowid`).all()
+    const items = rows.map(row => {
+      const triggers = Number(row.pending ?? 0)
+      // `eval` present means an Eval runs; `delivered` then decides whether its candidate reached the main Session.
+      const running = row.eval == null ? undefined : String(row.eval)
+      const status = running === undefined ? THREAD_STATUS.WAITING : row.delivered == null ? THREAD_STATUS.UNDELIVERED : THREAD_STATUS.EVALUATING
+      const since = running === undefined
+        ? row.oldest == null ? undefined : String(row.oldest)
+        : row.startedAt == null ? undefined : String(row.startedAt)
+      // Clamp at 0 so a backwards clock step cannot turn an age into a negative wait.
+      const ageMs = since === undefined ? undefined : Math.max(0, Date.parse(now) - Date.parse(since))
+      return { thread: String(row.thread), status, triggers, ...since === undefined ? {} : { since },
+        ...ageMs === undefined ? {} : { ageMs }, ...running === undefined ? {} : { eval: running } }
+    })
+    items.sort((a, b) => (b.ageMs ?? -1) - (a.ageMs ?? -1) || (a.thread < b.thread ? -1 : a.thread > b.thread ? 1 : 0))
+    const master = db.prepare('SELECT value FROM kv WHERE key = ?').get(KV.runtime.masterId)
+    const count = (status: ThreadStatusCode) => items.filter(item => item.status === status).length
+    return {
+      at: now,
+      instance: { pid: process.pid, bootedAt: BOOTED_AT, ...master ? { id: String(JSON.parse(String(master.value)) as string) } : {} },
+      totals: {
+        threads: items.length, waiting: count(THREAD_STATUS.WAITING), evaluating: count(THREAD_STATUS.EVALUATING),
+        undelivered: count(THREAD_STATUS.UNDELIVERED), triggers: items.reduce((sum, item) => sum + item.triggers, 0),
+      },
+      items,
+    }
+  },
   }
 }

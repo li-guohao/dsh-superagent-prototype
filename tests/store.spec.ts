@@ -44,6 +44,9 @@ const ticket = (id: string, state: 'open' | 'ended', assignments: Pick<Assignmen
   undelivered, createdAt: '', updatedAt: '', origin: { triggerId: '', triggerIds: [] } })
 const thread = (id: string, source: string, fields: Partial<Thread> = {}): Thread =>
   ({ key: `${source}:${id}`, ref: { source, id }, createdAt: '', subscriptions: [], correlated: [], pending: [], meta: {}, ...fields })
+const evaluation = (id: string, keyValue: string, startedAt: string, delivered?: string): NonNullable<Thread['evaluating']> =>
+  ({ id, threadKey: keyValue, triggerIds: [], strength: 'explicit', actor: { source: 'github', id: 'alice' }, basis: { via: 'followup' },
+    policyVersion: '', startedAt, ...delivered ? { delivered } : {}, deadline: '2026-11-08T00:04:00.000Z' })
 const ids = (items: { id?: string; key?: string }[]) => items.map(item => item.id ?? item.key).sort()
 it('reads the working sets alone, in SQLite as in memory, and follows each save', () => {
   const store = new Store(join(directory, 'orchestrator.sqlite'))
@@ -261,5 +264,53 @@ it('reads `%` and `_` in a key prefix and a search query as written, not as patt
     human: true, at: '2026-10-01T00:00:00.000Z', text, meta: {} })
   for (const [id, text] of [['p', 'grew 50% today'], ['q', 'grew 500 today'], ['r', 'see a_b'], ['s', 'see axb']]) store.triggers.save(said(id!, text!))
   expect([store.read.search('50%').map(item => item.id), store.read.search('a_b').map(item => item.id)]).toEqual([['p'], ['r']])
+  store.close()
+})
+
+type StatusRead = { assessmentStatus?: (now?: string) => {
+  at: string
+  instance: { id?: string; pid: number; bootedAt: string }
+  totals: { threads: number; waiting: number; evaluating: number; undelivered: number; triggers: number }
+  items: { thread: string; status: number; since?: string; ageMs?: number; triggers: number; eval?: string }[]
+} }
+
+it('reports no active Threads and zero totals when nothing waits', () => {
+  const store = new Store(join(directory, 'status.sqlite'))
+  // The status read is the only channel for this before S1; the cast keeps the red run an assertion failure.
+  const read = store.read as unknown as StatusRead
+  expect(typeof read.assessmentStatus).toBe('function')
+  expect(read.assessmentStatus!('2026-11-08T00:10:00.000Z')).toEqual({
+    at: '2026-11-08T00:10:00.000Z',
+    instance: { pid: process.pid, bootedAt: expect.any(String) },
+    totals: { threads: 0, waiting: 0, evaluating: 0, undelivered: 0, triggers: 0 },
+    items: [],
+  })
+  store.close()
+})
+
+it('lists each active Thread with a stable status code, its age, and the Eval it can be traced to', () => {
+  const store = new Store(join(directory, 'status.sqlite'))
+  store.set(KV.runtime.masterId, 'orchestrator-test')
+  store.threads.save(thread('1', 'github', { pending: ['a', 'b'] }))
+  // An evaluating Thread's pending Triggers are backlog too: an Eval that never ends keeps them waiting.
+  store.threads.save(thread('2', 'github', { pending: ['c'], evaluating: evaluation('e2', 'github:2', '2026-11-08T00:03:00.000Z', '2026-11-08T00:03:10.000Z') }))
+  // Delivery failed: `delivered` is missing, so `Evals.due` never expires this Eval and it is not in `pending` either.
+  store.threads.save(thread('3', 'github', { evaluating: evaluation('e3', 'github:3', '2026-11-08T00:02:00.000Z') }))
+  store.threads.save(thread('4', 'github'))
+  store.triggers.saveDisposition('a', { fanout: [], at: '2026-11-08T00:00:00.000Z' })
+  store.triggers.saveDisposition('b', { fanout: [], at: '2026-11-08T00:05:00.000Z' })
+  store.triggers.saveDisposition('c', { fanout: [], at: '2026-11-08T00:06:00.000Z' })
+  expect(store.threads.active().map(item => item.key)).toEqual(['github:1', 'github:2', 'github:3'])
+  const read = store.read as unknown as StatusRead
+  expect(typeof read.assessmentStatus).toBe('function')
+  // Oldest first: a waiting Thread by intake, then the undelivered Eval, then the delivered one still running.
+  const status = read.assessmentStatus!('2026-11-08T00:11:00.000Z')!
+  expect(status.instance).toMatchObject({ id: 'orchestrator-test', pid: process.pid })
+  expect(status.totals).toEqual({ threads: 3, waiting: 1, evaluating: 1, undelivered: 1, triggers: 3 })
+  expect(status.items).toEqual([
+    { thread: 'github:1', status: 1, since: '2026-11-08T00:00:00.000Z', ageMs: 660000, triggers: 2 },
+    { thread: 'github:3', status: 3, eval: 'e3', since: '2026-11-08T00:02:00.000Z', ageMs: 540000, triggers: 0 },
+    { thread: 'github:2', status: 2, eval: 'e2', since: '2026-11-08T00:03:00.000Z', ageMs: 480000, triggers: 1 },
+  ])
   store.close()
 })
