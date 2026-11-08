@@ -10,6 +10,8 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
 
+One pass is not one transaction. `evaluateDue` runs synchronously and takes a deferred `SAVEPOINT` for each unit of work it changes — an Eval that expires, finishes or starts, or a Ticket that wakes — so that unit's row writes, dispositions and queued effects commit together. Between units the pass only reads, and nothing else can write into those gaps: Node finishes the whole pass before any queued effect resumes, and the state directory is locked to this process. A fault inside a unit rolls that unit back and leaves the earlier units committed; those are complete states, not halves. An expired Eval sits with its Triggers back in `pending` until the next pass starts it, and a Ticket whose wake failed keeps its unread Input and is woken next pass. Merging the pass into a single transaction was considered and rejected: it would turn independent units into an all-or-nothing batch, hold SQLite's single-writer lock across every unit of the pass (measured well under a millisecond per unit), and delay the units that had already succeeded.
+
 ### Permissions and isolation
 
 The bundle defines `dsh-superagent-worker` for Executors and `dsh-superagent-router` for the main Session. They appear in the DeepSeek Harness preset list but are intended only for dsh-superagent. Do not select them for personal Sessions or disable their configuration rows. The application needs them to create and resume its Sessions.
