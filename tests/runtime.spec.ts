@@ -111,6 +111,17 @@ async function restart(machine: Partial<Machine> = {}, accounts: Accounts = {}):
   return runtime
 }
 let deliveries: ReturnType<typeof vi.fn<(request: { sessionId: string; mode: 'queue' | 'steer'; id: string; text: string }) => void>>
+/** A restart that also drops the main Session, as a new process starts without the old agent's in-memory history. */
+async function restartFresh(): Promise<Runtime> {
+  await runtime.stop()
+  agents.clear(); tools.clear()
+  const store = new Store(join(directory, 'orchestrator.sqlite')); seed(store); store.close()
+  const ctx = new Context()
+  for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
+  runtime = new Runtime(ctx, testMachine({ stateDir: directory }), restarts)
+  await runtime.ready
+  return runtime
+}
 const relays = (sessionId: string) => deliveries.mock.calls.map(([call]) => call).filter(call => call.sessionId === sessionId).map(call => {
   try { return JSON.parse(call.text) as Record<string, unknown> } catch { return { text: call.text } as Record<string, unknown> }
 })
@@ -290,6 +301,25 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   expect(ticket.mandate).toMatchObject({ strength: 'inferred', basis: expect.objectContaining({ via: 'admission', rules: ['copy'], observation: { mode: 'auto' } }) })
   expect(runtime.store.replyStatus(key('ack', again.id))).toBeDefined()
   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('Proactively accepted under copy') })
+})
+
+it('redelivers a live card after a restart starts the main Session blank, and still serves its candidate', async () => {
+  await runtime.settings.save('eval', { ...runtime.store.settings().eval, mode: 'observe' }, runtime.store.blockRevision('eval'), 'panel')
+  const trigger = feishu('6', '这个文案好奇怪，改成“浏览网页”吧', { mentions: [] })
+  await receive(trigger)
+  vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ items: [{ message_id: 'om_6', chat_id: CHAT }] })
+  const key = `feishu:${CHAT}:om_6`
+  const evaluation = runtime.store.threads.get(key)!.evaluating!
+  expect(relays(runtime.masterId).filter(item => item.kind === 'candidate')).toEqual([expect.objectContaining({ trigger_id: trigger.id })])
+  deliveries.mockClear()
+  await restartFresh()
+  await runtime.idle()
+  // The Eval survived, and the new Session that has no history of the first one still receives its card.
+  expect(runtime.store.threads.get(key)!.evaluating).toMatchObject({ id: evaluation.id, delivered: evaluation.delivered })
+  expect(relays(runtime.masterId).filter(item => item.kind === 'candidate')).toEqual([expect.objectContaining({ trigger_id: trigger.id })])
+  // The card is readable because the context is rebuilt from stored state rather than from a surviving cache.
+  const details = await runTool(runtime.masterId, 'orchestrator_eval', { trigger_id: trigger.id })
+  expect(details).toMatchObject({ trigger_id: trigger.id })
 })
 
 it('accepts silently under a rule that says so, gives the worker the rule procedure, and closes it as dropped when nothing is left for a human', async () => {

@@ -219,7 +219,20 @@ export class Runtime extends Service implements SourceHost {
     this.executor.resume()
     this.passes.start()
     this.effects.start()
+    // The queue delivers a card once and forgets it, so a restart can leave a live Eval whose new main Session never
+    // saw its card. Rebuild it from stored state; the read caches stay volatile and rebuild on demand.
+    this.redeliverCards()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
+  }
+  /** Requeues the card of each Eval that was delivered before this process started, so a fresh main Session can act on it. */
+  private redeliverCards(): void {
+    for (const thread of this.store.threads.active()) {
+      const evaluation = thread.evaluating
+      if (!evaluation?.delivered) continue
+      const candidate = this.engine.candidate(evaluation.triggerIds[0] ?? '')
+      // A card is only meaningful for the Eval that is still live; a replaced one belongs to a newer delivery.
+      if (candidate?.evalId === evaluation.id) this.assessor.request(candidate)
+    }
   }
   private httpHost(): HttpHost {
     const runtime = this

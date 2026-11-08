@@ -244,6 +244,8 @@ From an allowed GitHub account, open an Issue or post a comment containing `@<ag
 
 A restart ends running Assignments and starts replacements with recovery notes. Team text and overridden prompt parts are retained; parts without overrides follow the new defaults. Review parts marked **Default updated** after upgrading.
 
+A restart restores what the database holds: Threads and their open Evals, Tickets, Assignments, stored effects and settings. Two things stay process-local by design. An Eval's card is delivered once, so on start the host queues the card of every live, already delivered Eval again from stored state; a main Session that resumed with its history may therefore see the card twice, which is harmless because its tools are idempotent and a second decision is refused as finished. The Eval's read caches are not restored: the Thread window, page snapshots, images and pagination cursors are rebuilt when the main Session next calls `orchestrator_eval`. A cursor or offset that belongs to a page the rebuilt window did not reach is refused, with the instruction to read from the start again, so the model recovers rather than reading a stale view. Reading a live Eval whose Trigger is known works after a restart; only the continuation of an older read does not.
+
 A database migrated by a newer version cannot be opened by an older one. Rollback therefore requires the pre-upgrade backup. After upgrading DeepSeek Harness itself, restart the running instance so the panel loads matching artifacts.
 
 ### Agent presets

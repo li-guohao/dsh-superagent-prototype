@@ -35,19 +35,25 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const repo = new MemoryRepositories()
   const sources = new SourceRegistry(() => SettingsSchema.parse({}))
   sources.register(githubKind)
-  let engine!: Engine
-  const host: AssessorHost = {
-    get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
-    threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
-    effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
-  }
-  const assessor = new MasterAssessor(host)
   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 600_000, gate: () => ({ admissible: true, strength, basis: { via: 'followup' } }),
     revalidate: () => true, admitsInferred: rules => rules.length > 0 }
   const executor: Executor = { start: async () => {}, deliver: async () => {}, stop: async () => {} }
   const scope = { scope: () => ({ listened: true as const, observed: true }) }
   const outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
-  engine = new Engine({ repo, policy: () => policy, scope, assessor, executor, outbox })
+  let engine!: Engine
+  let assessor!: MasterAssessor
+  /** Wires an Engine and its assessor over the same repositories, as a host restart does with a fresh in-memory cache. */
+  const boot = () => {
+    const host: AssessorHost = {
+      get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
+      threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
+      effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
+    }
+    assessor = new MasterAssessor(host)
+    engine = new Engine({ repo, policy: () => policy, scope, assessor, executor, outbox })
+    return { engine, assessor }
+  }
+  boot()
   const tools: Record<string, (args: unknown, signal: AbortSignal) => Promise<unknown>> = {}
   tools.orchestrator_eval_read = (args, signal) => assessor.read({} as Agent, EvalReadSchema.parse(args), signal)
   tools.orchestrator_eval_decide = (args, signal) => {
@@ -55,9 +61,8 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
     return assessor.decide(trigger_id, AssessmentSchema.parse(result), signal)
   }
   // Per-Eval state retained by the assessor and released when the Eval ends.
-  const kept = assessor as unknown as { evals: Map<string, unknown> }
-  const size = () => kept.evals.size
-  return { repo, engine, assessor, tools, size, gate }
+  const size = () => (assessor as unknown as { evals: Map<string, unknown> }).evals.size
+  return { repo, engine, assessor, tools, size, gate, boot }
 }
 const issue = (n: number): Trigger => ({ id: `issue-${n}`, source: 'github', threads: [{ source: 'github', id: String(n) }], actor: { source: 'github', id: 'bob' }, human: true,
   at: new Date(Date.UTC(2026, 8, 9, 0, 0, n)).toISOString(), text: `issue ${n}`, url: `https://github.com/acme/widgets/issues/${n}`, meta: { number: n } })
@@ -180,4 +185,29 @@ it('lets the main Session read on from the cursor its loaded window ends with, a
   s2.engine.receive(long); s2.engine.receive({ ...issue(3), threads: issue(1).threads }); s2.engine.evaluateDue()
   const other = await s2.assessor.context('issue-3', signal) as { batch: Record<string, unknown>[] }
   expect(other.batch).toEqual([expect.objectContaining({ trigger_id: 'long', chars: long.text.length, read: 'trigger/long' })])
+})
+
+it('serves a live candidate to a restarted assessor but does not restore reads past the window it reseeds', async () => {
+  // Every page returns a next cursor, so the bounded window ends with continuation cursor 10.
+  const page = (cursor?: string) => {
+    const n = Number(cursor ?? 0)
+    const message = { id: `m${n}`, from: 'bob', at: new Date(Date.UTC(2026, 8, 9, 0, 0, n)).toISOString(), text: `message ${n}` }
+    return { messages: [message], next: String(n + 1), body: { messages: [message] } }
+  }
+  const context = { messageId: 'm0', read: async (_commands: Commands, _part: string, cursor?: string) => page(cursor), images: () => [],
+    image: async () => { throw new Error('No images') } }
+  const s = setup('inferred', undefined, () => context)
+  s.engine.receive(issue(1))
+  const long = { ...issue(2), id: 'long', threads: issue(1).threads, text: 'a long follow-up. '.repeat(40) }
+  s.engine.receive(long); s.engine.evaluateDue()
+  const loaded = await s.assessor.context('long', signal) as { thread: { next_cursor?: string } }
+  const beyond = await s.tools.orchestrator_eval_read!({ trigger_id: 'long', resource: 'thread', cursor: loaded.thread.next_cursor }, signal) as { text: string }
+  const past = (JSON.parse(beyond.text) as { next_read: { cursor: string } }).next_read.cursor
+  const { assessor, engine } = s.boot()
+  // The Eval still lives in the repositories, and the context is rebuilt from stored state on demand.
+  expect(engine.candidate('long')).toMatchObject({ evalId: expect.any(String) })
+  expect(await assessor.context('long', signal)).toMatchObject({ trigger_id: 'long' })
+  // The window's own cursor is seeded again; a cursor from further pages is process-local and is refused, recoverable.
+  await expect(assessor.read({} as Agent, EvalReadSchema.parse({ trigger_id: 'long', resource: 'thread', cursor: past }), signal))
+    .rejects.toThrow('Unknown thread cursor')
 })
