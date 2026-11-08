@@ -13,12 +13,14 @@ Each Thread entry carries its deterministic key and, when an Eval runs, that Eva
 | Code | Constant | Meaning | Introduced |
 |---|---|---|---|
 | 0 | `THREAD_STATUS.UNKNOWN` | Reserved. A record that cannot be classified must never look like a real state. | 0.1.0 |
-| 1 | `THREAD_STATUS.WAITING` | `pending` holds Triggers and no Eval runs. `ageMs` counts from the oldest pending intake. | 0.1.0 |
+| 1 | `THREAD_STATUS.WAITING` | `pending` holds Triggers no ticket decides and no Eval runs. `ageMs` counts from the oldest such intake. | 0.1.0 |
 | 2 | `THREAD_STATUS.EVALUATING` | An Eval runs and `evaluating.delivered` is set. `ageMs` counts from the Eval start. | 0.1.0 |
 | 3 | `THREAD_STATUS.UNDELIVERED` | An Eval runs but `evaluating.delivered` is missing; it never expires. `ageMs` counts from the Eval start. | 0.1.0 |
 | 4–9 | — | Reserved for later Thread states. Add a registry row before assigning a value. | — |
 
 One code per Thread: a Thread that is evaluating reports 2 or 3 even when it also holds pending Triggers. Those Triggers still count in `totals.triggers`.
+
+A Trigger counts as waiting only while it still awaits an Eval, judged by `followupOwners`: a Trigger a ticket still decides is that ticket's, and `Evals.start` removes it from `pending` on its next pass. A stale row that pass has not reached yet, or one that an Eval's presence keeps a Thread from reaching, is not backlog: it is neither counted nor aged, and a Thread kept active only by such rows has no entry.
 
 ## Event codes
 

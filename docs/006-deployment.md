@@ -185,13 +185,13 @@ Health entries are grouped by responsibility:
 | `runtime` | The application itself |
 | `models` | Sessions waiting on a model-budget retry |
 | `evals` | Unavailable Evals from the last hour with no later judgement or dismissal |
-| `assessor` | Waiting and undelivered Threads past `eval.alarmSeconds`; its `data` carries the counts, the oldest age and the reading `instance` (`id`, `pid`, `bootedAt`) |
+| `assessor` | Waiting and undelivered Threads past `eval.alarmSeconds`; waiting means a queued Trigger no ticket decides. Its `data` carries the counts, the oldest age and the reading `instance` (`id`, `pid`, `bootedAt`) |
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
 | `github`, `feishu`, `history` | Source polling, events and history recovery |
 | `sync:<source id>` | Allowed-list synchronization |
 
-`assessor` reads the assessment backlog only: counts are always reported, and it turns `error` only when the oldest waiting Thread or the oldest undelivered candidate is older than `eval.alarmSeconds`. A backlog inside that age is normal queueing and stays `ready`, so the entry does not flap on every arrival. The default is 240 seconds, twice the default Eval timeout; settings saved before the key existed read that default. The check does not depend on `paused`, so a backlog gathered while processing is paused still alarms.
+`assessor` reads the assessment backlog only: counts are always reported, and it turns `error` only when the oldest waiting Thread or the oldest undelivered candidate is older than `eval.alarmSeconds`. Waiting counts only Triggers that still await an Eval: one a ticket still decides is that ticket's even while a stale row remains in `pending`, so it neither counts nor alarms. A backlog inside that age is normal queueing and stays `ready`, so the entry does not flap on every arrival. The default is 240 seconds, twice the default Eval timeout; settings saved before the key existed read that default. The check does not depend on `paused`, so a backlog gathered while processing is paused still alarms.
 
 A refusal has a status and `error`, its English text:
 

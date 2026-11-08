@@ -8,7 +8,7 @@
 export const THREAD_STATUS = {
   /** Reserved: a record that cannot be classified must never look like a real state. */
   UNKNOWN: 0,
-  /** Triggers wait in `pending`; no Eval is running. */
+  /** Queued Triggers no ticket decides wait in `pending`; no Eval is running. */
   WAITING: 1,
   /** An Eval runs and its candidate reached the main Session (`evaluating.delivered` is set). */
   EVALUATING: 2,

@@ -1,6 +1,7 @@
 /** Read-only Store queries for views, tools, and Source polling. */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
-import type { Decision, Thread, Trigger } from '../core/index.ts'
+import { followupOwners } from '../core/index.ts'
+import type { Decision, Thread, Ticket, Trigger, TriggerDisposition } from '../core/index.ts'
 import { KV } from '../kv.ts'
 import { THREAD_STATUS, type ThreadStatusCode } from './codes.ts'
 import type { Dropped, Receipt, TimelinePlace } from './store.ts'
@@ -19,10 +20,10 @@ export interface InstanceIdentity {
 export interface ThreadStatus {
   thread: string
   status: ThreadStatusCode
-  /** The timestamp `ageMs` counts from: the oldest pending intake, or the running Eval's start. */
+  /** The timestamp `ageMs` counts from: the oldest waiting intake, or the running Eval's start. */
   since?: string
   ageMs?: number
-  /** Triggers still waiting in this Thread's `pending`. */
+  /** Triggers of this Thread's `pending` that still wait for an Eval: no ticket decides them. */
   triggers: number
   /** The running Eval, when the Thread is evaluating (delivered or not). */
   eval?: string
@@ -37,6 +38,27 @@ export interface AssessmentStatus {
 
 export function storeReads(db: DatabaseSync) {
   const values = <T>(sql: string, ...parameters: SQLInputValue[]): T[] => db.prepare(sql).all(...parameters).map(row => JSON.parse(String(row.value)) as T)
+  /**
+   * The rows `followupOwners` consults, read by primary key and memoized for one snapshot: a page asks for the same
+   * ticket or Trigger many times, and an assessment asks for each queued Trigger once.
+   */
+  const followupReads = () => {
+    const once = <T>(read: (id: string) => T) => {
+      const seen = new Map<string, T>()
+      return (id: string) => { if (!seen.has(id)) seen.set(id, read(id)); return seen.get(id) as T }
+    }
+    const row = <T>(table: 'trigger' | 'ticket' | 'thread' | 'disposition', column: 'id' | 'key', value: string): T | undefined => {
+      const stored = db.prepare(`SELECT value FROM ${table} WHERE ${column} = ?`).get(value)
+      return stored ? JSON.parse(String(stored.value)) as T : undefined
+    }
+    return {
+      /** A queued Trigger whose row is gone is decided by no ticket, so it keeps waiting. */
+      trigger: once((id: string) => row<Trigger>('trigger', 'id', id)),
+      tickets: { get: once((id: string) => row<Ticket>('ticket', 'id', id)) },
+      threads: { get: once((keyValue: string) => row<Thread>('thread', 'key', keyValue)) },
+      triggers: { disposition: once((id: string) => row<TriggerDisposition>('disposition', 'id', id)) },
+    }
+  }
   return {
   /** Newest first by arrival (`rowid`) order rather than trigger timestamp. */
   recentTriggers: (offset = 0, limit = 50): Trigger[] => db.prepare('SELECT value FROM trigger ORDER BY rowid DESC LIMIT ? OFFSET ?').all(limit, offset).map(row => JSON.parse(String(row.value)) as Trigger),
@@ -110,34 +132,39 @@ export function storeReads(db: DatabaseSync) {
     // Force the partial index so SQLite does not scan the entire table in rowid order.
     : values('SELECT value FROM thread INDEXED BY thread_subscribed WHERE subscribed IS NOT NULL ORDER BY rowid'),
   /**
-   * One entry per active Thread, oldest first: waiting in `pending` (status 1), evaluating with its candidate delivered
-   * (status 2), or evaluating with `delivered` missing (status 3, which never expires). `ageMs` counts from the oldest
-   * pending intake (`disposition.at`, not `trigger.at`: polled history reaches back the Source's horizon and would read
-   * as a backlog that never existed) or from the Eval's start.
+   * One entry per Thread with backlog, oldest first: waiting for an Eval (status 1), evaluating with its candidate delivered
+   * (status 2), or evaluating with `delivered` missing (status 3, which never expires).
    *
-   * Cost: one scan over `thread WHERE active = 1` using the existing partial index; the pending lookup is a correlated
-   * subquery evaluated only for those rows, so neither the whole `thread` table nor `disposition` is scanned wholesale.
+   * A Trigger counts only while it still waits for an Eval: one a ticket decides is that ticket's, and `Evals.start` drops it
+   * from `pending` on its next pass (see `followupOwners`). Reading raw `pending` would report such a follow-up as backlog
+   * until that pass, and a Thread an Eval keeps from passing would report it indefinitely. `ageMs` counts from the oldest
+   * waiting intake (`disposition.at`: polled history reaches back the Source's horizon and `trigger.at` would read as a
+   * backlog that never existed) or from the Eval's start. A Thread kept active only by queued Triggers no ticket decides
+   * has no backlog entry: it neither waits nor evaluates.
+   *
+   * Cost: one scan over `thread WHERE active = 1` using the existing partial index, then per keyed read for each queued
+   * Trigger through `followupReads`; neither table is scanned wholesale.
    */
   assessmentStatus: (now = new Date().toISOString()): AssessmentStatus => {
-    const rows = db.prepare(`SELECT t.key AS thread,
-        json_extract(t.value, '$.evaluating.id') AS eval,
-        json_extract(t.value, '$.evaluating.delivered') AS delivered,
-        json_extract(t.value, '$.evaluating.startedAt') AS startedAt,
-        json_array_length(t.value, '$.pending') AS pending,
-        (SELECT MIN(json_extract(d.value, '$.at')) FROM json_each(t.value, '$.pending') AS p JOIN disposition d ON d.id = p.value) AS oldest
-      FROM thread t WHERE t.active = 1 ORDER BY t.rowid`).all()
-    const items = rows.map(row => {
-      const triggers = Number(row.pending ?? 0)
-      // `eval` present means an Eval runs; `delivered` then decides whether its candidate reached the main Session.
-      const running = row.eval == null ? undefined : String(row.eval)
-      const status = running === undefined ? THREAD_STATUS.WAITING : row.delivered == null ? THREAD_STATUS.UNDELIVERED : THREAD_STATUS.EVALUATING
-      const since = running === undefined
-        ? row.oldest == null ? undefined : String(row.oldest)
-        : row.startedAt == null ? undefined : String(row.startedAt)
+    const reads = followupReads()
+    const waiting = (id: string): boolean => {
+      const trigger = reads.trigger(id)
+      return !trigger || followupOwners(trigger, reads).length === 0
+    }
+    /** The oldest intake among the Triggers that still wait; a Trigger the intake recorded no `disposition.at` for adds none. */
+    const intake = (ids: string[]): string | undefined =>
+      ids.flatMap(id => { const at = reads.triggers.disposition(id)?.at; return at === undefined ? [] : [at] }).sort()[0]
+    const items = values<Thread>('SELECT value FROM thread WHERE active = 1 ORDER BY rowid').flatMap(thread => {
+      const queued = thread.pending.filter(waiting)
+      const evaluation = thread.evaluating
+      if (!evaluation && !queued.length) return []
+      const status = !evaluation ? THREAD_STATUS.WAITING
+        : evaluation.delivered == null ? THREAD_STATUS.UNDELIVERED : THREAD_STATUS.EVALUATING
+      const since = evaluation ? evaluation.startedAt : intake(queued)
       // Clamp at 0 so a backwards clock step cannot turn an age into a negative wait.
       const ageMs = since === undefined ? undefined : Math.max(0, Date.parse(now) - Date.parse(since))
-      return { thread: String(row.thread), status, triggers, ...since === undefined ? {} : { since },
-        ...ageMs === undefined ? {} : { ageMs }, ...running === undefined ? {} : { eval: running } }
+      return [{ thread: thread.key, status, triggers: queued.length, ...since === undefined ? {} : { since },
+        ...ageMs === undefined ? {} : { ageMs }, ...evaluation ? { eval: evaluation.id } : {} }]
     })
     items.sort((a, b) => (b.ageMs ?? -1) - (a.ageMs ?? -1) || (a.thread < b.thread ? -1 : a.thread > b.thread ? 1 : 0))
     const master = db.prepare('SELECT value FROM kv WHERE key = ?').get(KV.runtime.masterId)

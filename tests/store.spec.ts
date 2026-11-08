@@ -314,3 +314,45 @@ it('lists each active Thread with a stable status code, its age, and the Eval it
   ])
   store.close()
 })
+
+it('counts a queued Trigger as waiting until a ticket decides it, and reads no backlog from an empty store', () => {
+  const empty = new Store(join(directory, 'waiting-empty.sqlite'))
+  const emptyRead = empty.read as unknown as StatusRead
+  expect(typeof emptyRead.assessmentStatus).toBe('function')
+  expect(emptyRead.assessmentStatus!('2026-11-08T00:10:00.000Z')!.totals)
+    .toEqual({ threads: 0, waiting: 0, evaluating: 0, undelivered: 0, triggers: 0 })
+  empty.close()
+
+  const store = new Store(join(directory, 'waiting.sqlite'))
+  const said = (id: string, threadId: string) => ({
+    id, source: 'github', threads: [{ source: 'github', id: threadId }], actor: { source: 'github', id: 'alice' },
+    human: true, at: '', text: id, meta: {},
+  })
+  store.tickets.save(ticket('t_live', 'open', []))
+  // Queued: intake recorded a disposition, no ticket took it.
+  store.triggers.save(said('q', 'queued'))
+  store.triggers.saveDisposition('q', { fanout: [], at: '2026-11-08T00:00:00.000Z' })
+  store.threads.save(thread('queued', 'github', { pending: ['q'] }))
+  // Already fanned out but not yet cleaned: the live ticket still decides it, so `pending` holds a stale row.
+  store.triggers.save(said('s', 'stale'))
+  store.triggers.saveDisposition('s', { fanout: ['t_live'], at: '2026-11-08T00:00:00.000Z' })
+  store.threads.save(thread('stale', 'github', { pending: ['s'] }))
+  // One owned and one queued on the same Thread: only the queued one waits, and the age counts from its intake.
+  store.triggers.save(said('s2', 'mixed'))
+  store.triggers.save(said('q2', 'mixed'))
+  store.triggers.saveDisposition('s2', { fanout: ['t_live'], at: '2026-11-08T00:00:00.000Z' })
+  store.triggers.saveDisposition('q2', { fanout: [], at: '2026-11-08T00:05:00.000Z' })
+  store.threads.save(thread('mixed', 'github', { pending: ['s2', 'q2'] }))
+  // An Eval that keeps the Thread from its next pass, with a stale fan-out in `pending`.
+  store.triggers.save(said('s3', 'busy'))
+  store.triggers.saveDisposition('s3', { fanout: ['t_live'], at: '2026-11-08T00:02:00.000Z' })
+  store.threads.save(thread('busy', 'github', { pending: ['s3'], evaluating: evaluation('e4', 'github:busy', '2026-11-08T00:02:00.000Z', '2026-11-08T00:02:10.000Z') }))
+  const status = (store.read as unknown as StatusRead).assessmentStatus!('2026-11-08T00:10:00.000Z')!
+  expect(status.totals).toEqual({ threads: 3, waiting: 2, evaluating: 1, undelivered: 0, triggers: 2 })
+  expect(status.items).toEqual([
+    { thread: 'github:queued', status: 1, since: '2026-11-08T00:00:00.000Z', ageMs: 600000, triggers: 1 },
+    { thread: 'github:busy', status: 2, eval: 'e4', since: '2026-11-08T00:02:00.000Z', ageMs: 480000, triggers: 0 },
+    { thread: 'github:mixed', status: 1, since: '2026-11-08T00:05:00.000Z', ageMs: 300000, triggers: 1 },
+  ])
+  store.close()
+})
