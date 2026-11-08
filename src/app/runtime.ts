@@ -105,7 +105,9 @@ export class Runtime extends Service implements SourceHost {
       store.set(KV.runtime.masterId, masterId)
       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
       const board = this.board
-      const effects = this.effects = new Effects(store, board)
+      // Read per attempt so an operator changing the deadline affects the next attempt, while one already running keeps the value it started with.
+      const effects = this.effects = new Effects(store, board, () => Date.now(),
+        () => store.settings().eval.effectAttemptSeconds * 1000)
       const sources = this.sources = new SourceRegistry(() => store.settings(), board, kind => {
         // Sync source member lists once startup completes when a source plugin loads dynamically.
         if (kind.policy?.sync) void this.ready?.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined)

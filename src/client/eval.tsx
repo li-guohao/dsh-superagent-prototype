@@ -192,9 +192,10 @@ function PolicyBlock() {
 function EvalBlock() {
   const { t } = usePanel()
   const block = useSettings().settings.blocks.eval
-  const saved = { ...block.value, timeoutSeconds: String(block.value.timeoutSeconds), alarmSeconds: String(block.value.alarmSeconds) }
+  const saved = { ...block.value, timeoutSeconds: String(block.value.timeoutSeconds), alarmSeconds: String(block.value.alarmSeconds),
+    effectAttemptSeconds: String(block.value.effectAttemptSeconds) }
   const draft = useBlockDraft('eval', saved, block.revision, value => ({ ...value, timeoutSeconds: numberOf(value.timeoutSeconds),
-    alarmSeconds: numberOf(value.alarmSeconds) }))
+    alarmSeconds: numberOf(value.alarmSeconds), effectAttemptSeconds: numberOf(value.effectAttemptSeconds) }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
   return <form className="dt-form dt-block" onSubmit={event => { void draft.submit(event) }}>
@@ -212,6 +213,10 @@ function EvalBlock() {
       <Field label={t('evalAlarm')} hint={t('evalAlarmHint')}>
         <Input type="number" min={LIMITS.evalAlarmSeconds.min} max={LIMITS.evalAlarmSeconds.max} required value={value.alarmSeconds}
           onChange={event => edit({ alarmSeconds: event.target.value })} />
+      </Field>
+      <Field label={t('effectAttempt')} hint={t('effectAttemptHint')}>
+        <Input type="number" min={LIMITS.effectAttemptSeconds.min} max={LIMITS.effectAttemptSeconds.max} required value={value.effectAttemptSeconds}
+          onChange={event => edit({ effectAttemptSeconds: event.target.value })} />
       </Field>
       <Section title={t('assessorModel')} hint={t('assessorModelHint')}>
         <ModelField id="dt-eval-model" value={value.model} onChange={model => edit({ model })} />

@@ -233,6 +233,8 @@ const TEXT = {
   evalTimeoutHint: ['主 Session 读取上下文并研判。到期后记为未完成，后续触发重新评估。', 'The main Session reads context and assesses. When time runs out the Eval is unavailable and later Triggers are evaluated again.'],
   evalAlarm: ['评估积压告警 / 秒', 'Assessment alarm / seconds'],
   evalAlarmHint: ['等待评估或未投递的 Thread 超过这个时长才算降级；正常排队不算，计数始终显示。', 'A Thread waiting for an Eval or undelivered degrades the health only past this age; normal queueing does not, and the counts are always shown.'],
+  effectAttempt: ['副作用单次时限 / 秒', 'Effect attempt limit / seconds'],
+  effectAttemptHint: ['一次副作用执行超过这个时长即记为失败并退避重试，让队头不再被卡住；0 关闭。', 'An effect attempt running longer than this counts as failed and retries with backoff so the queue head stops blocking; 0 switches it off.'],
   evalIntro: ['评估决定一批触发是否成为工作：推断出的候选能否接单、评估时限和研判模型。', 'Eval decides whether a batch of Triggers becomes work: whether inferred candidates may be accepted, the time limit, and the assessor model.'],
   evalSettings: ['评估设置', 'Eval settings'],
   policyIntro: ['评估依据的规则：接单规则，以及各来源上谁能发起工作。修改会生成新的策略版本，并通知进行中的工单。', 'The rules Eval follows: the accept rules, and who may originate work on each Source. A change makes a new Policy version and notifies open Tickets.'],

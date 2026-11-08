@@ -39,3 +39,5 @@ Registered in 0.1.0 and emitted by nothing yet: this step adds no log channel. T
 | 106–199, 202–999 | — | Reserved. Do not reuse a retired value. | — |
 
 Events are not stored: there is no event table, by design, so counts and filters come from log aggregation once an emitter exists. Status values stay program-readable in the snapshot and never depend on log text.
+
+Effects sit outside both tables: an effect attempt stopped by its deadline counts as a failed attempt on its `effect` row (`attempts` and `error`), as [006 Deployment](006-deployment.md) describes, and raises no status or event code.

@@ -54,7 +54,11 @@ export class Effects {
   /** Effects run only between `start` and `drain`; rows queued before `start` wait, such as while setup is incomplete. */
   private started = false
   private stopped = false
-  constructor(private readonly store: Store, private readonly board: Pick<HealthBoard, 'claim'>, private readonly now = () => Date.now()) {
+  /**
+   * @param deadline how long one attempt may run before it counts as failed, in milliseconds; 0 switches it off.
+   */
+  constructor(private readonly store: Store, private readonly board: Pick<HealthBoard, 'claim'>, private readonly now = () => Date.now(),
+    private readonly deadline = () => 0) {
     this.seq = Number(store.db.prepare('SELECT IFNULL(MAX(seq), 0) AS seq FROM effect').get()?.seq ?? 0)
   }
   /** Upserts an effect in the caller's transaction, coalescing with any waiting row of the same kind and key while keeping its queue position. */
@@ -129,7 +133,23 @@ export class Effects {
   }
   private async attempt(kind: EffectKind, handler: Handler<never>, row: Row): Promise<void> {
     let failure: { error: unknown } | undefined
-    try { await handler.run(JSON.parse(row.value) as never, row.key) } catch (error) { failure = { error } }
+    // A handler cannot be cancelled, so a deadline stops waiting and fails the attempt while the handler keeps running.
+    // The abandoned handler holds no guard: only this method owns `seq`/`generation`, so it can neither delete a newer
+    // payload nor overwrite the retry. `deadline` is 0 when the operator switches it off, leaving the old behaviour.
+    const deadline = this.deadline()
+    const work = handler.run(JSON.parse(row.value) as never, row.key)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      // Attach a catch to the abandoned promise before racing: a handler that rejects after its deadline must not surface
+      // as an unhandled rejection. The race keeps its own handler, so a fast failure still reaches `failure`.
+      if (deadline > 0) work.catch(() => {})
+      await (deadline > 0
+        ? Promise.race([work, new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`The effect attempt ran longer than its ${deadline / 1000}s deadline`)), deadline)
+            ;(timer as { unref?: () => void }).unref?.()
+          })])
+        : work)
+    } catch (error) { failure = { error } } finally { clearTimeout(timer) }
     // Match seq and generation so a row replaced or re-queued while running is not overwritten.
     const own = 'kind = ? AND key = ? AND seq = ? AND generation = ?', ownRow = [kind, row.key, row.seq, row.generation] as const
     if (!failure) this.store.db.prepare(`DELETE FROM effect WHERE ${own}`).run(...ownRow)

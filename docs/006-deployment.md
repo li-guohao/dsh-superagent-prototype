@@ -191,6 +191,8 @@ Health entries are grouped by responsibility:
 | `github`, `feishu`, `history` | Source polling, events and history recovery |
 | `sync:<source id>` | Allowed-list synchronization |
 
+Every attempt of those kinds is bounded by `eval.effectAttemptSeconds`, 0–3600, default 600 and 0 off. An attempt that runs longer counts as failed: the queue records the reason, raises its `attempts` and waits for that kind's backoff, so a stuck attempt cannot hold an ordered queue forever. The handler itself is not cancelled and may still finish, but it holds no row guard, so it neither deletes nor overwrites the retry; no row is dropped. The handler's own side effect is not undone, which is why handlers must stay idempotent.
+
 `assessor` reads the assessment backlog only: counts are always reported, and it turns `error` only when the oldest waiting Thread or the oldest undelivered candidate is older than `eval.alarmSeconds`. Waiting counts only Triggers that still await an Eval: one a ticket still decides is that ticket's even while a stale row remains in `pending`, so it neither counts nor alarms. A backlog inside that age is normal queueing and stays `ready`, so the entry does not flap on every arrival. The default is 240 seconds, twice the default Eval timeout; settings saved before the key existed read that default. The check does not depend on `paused`, so a backlog gathered while processing is paused still alarms.
 
 A refusal has a status and `error`, its English text:
@@ -204,7 +206,7 @@ The blocks:
 
 - `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
 - `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
-- `eval`: `mode`, `timeoutSeconds`, `alarmSeconds` and `model`.
+- `eval`: `mode`, `timeoutSeconds`, `alarmSeconds`, `effectAttemptSeconds` and `model`. `effectAttemptSeconds` is the per-attempt limit for stored effects; its default of 600 is longer than any legitimate attempt (an Eval gives up after 120 s, and a worker turn is bounded by the driver) yet short enough to free a queue within ten minutes. 0 switches it off.
 - `executor`: `model`, `maxWorkers`, `directory`, `prepare` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
 
 Changing a repository or CLI runs the corresponding setup check first. A failed check returns 400 with details in `setup`. A successful account change, or any save while setup is pending, returns `restarting: true`. The API is temporarily unavailable while the application restarts.

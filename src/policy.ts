@@ -85,6 +85,9 @@ export const EvalConfigSchema = z.object({
   timeoutSeconds: z.number().int().min(LIMITS.evalTimeoutSeconds.min).max(LIMITS.evalTimeoutSeconds.max).default(120),
   // Defaults to twice the default Eval timeout: a Thread legitimately waiting for one full Eval plus delivery stays normal.
   alarmSeconds: z.number().int().min(LIMITS.evalAlarmSeconds.min).max(LIMITS.evalAlarmSeconds.max).default(240),
+  // Defaults to five default Eval timeouts: longer than any legitimate attempt (an Eval already gives up after 120s, and a
+  // worker turn is bounded by the driver) yet short enough to free an ordered queue within ten minutes. 0 switches it off.
+  effectAttemptSeconds: z.number().int().min(LIMITS.effectAttemptSeconds.min).max(LIMITS.effectAttemptSeconds.max).default(600),
   model: RoleModelSchema.nullable().default(null),
 }).strict()
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
