@@ -880,6 +880,8 @@ it('accepts a deployment that declares itself repository-less, without inventing
   expect(next.deployment).toMatchObject({ repositoryMode: 'no-repository', stateDir: directory })
   expect(next.deployment).not.toHaveProperty('repository')
   expect(next.deployment).not.toHaveProperty('github')
+  // Readiness comes from a pass that actually ran, not from startup finishing.
+  await next.pump()
   expect(next.health.runtime).toMatchObject({ state: 'ready' })
   expect((await api('GET', 'state')).body).toMatchObject({ setup: { problem: null, accounts: null } })
 })

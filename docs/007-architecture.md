@@ -30,16 +30,27 @@ flowchart TB
 
 `Runtime` is the composition root; it contains no domain rules. Its constructor locks the state directory, opens the Store and builds each component. If construction fails, it closes the Store and releases the lock.
 
-Startup registers management routes and runs Setup. After setup resolves, it installs Session and Executor hooks, ensures the main Session exists, starts Policy syncs, resumes interrupted Assignments, and starts passes and effects. `ready` marks completion of startup.
+Startup registers management routes and runs Setup. After setup resolves, it installs Session and Executor hooks, ensures the main Session exists, starts Policy syncs, resumes interrupted Assignments, and starts passes and effects. `ready` marks the completion of the first pass that actually ran, not the end of startup.
 
 Shutdown cancels turns, waits for passes, effects and agents, restores the process environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface.
 
 | Part | Module | Does |
 | --- | --- | --- |
 | Setup | `src/app/setup.ts` | Resolves the repository and the accounts by probing their CLIs the way worker shells run them, writes and applies the workers' environment and command shims, and keeps the setup problems; Settings checks a changed account through it, and restarts through it, which runs setup again |
-| Passes | `src/app/passes.ts` | One pass at a time, every two seconds and whenever a command asks: the due effects, then `Engine.evaluateDue`; a Source's Trigger reaches the Engine through it |
+| Passes | `src/app/passes.ts` | One pass at a time, every two seconds and whenever a command asks: the due effects, then `Engine.evaluateDue`; a Source's Trigger reaches the Engine through it. It records each completed pass (`completedAt`, wall time, `tookMs`, `gapMs`) and counts slow passes and recovered stalls; see [Passes and the L0 watchdog](#passes-and-the-l0-watchdog) |
 | Outbox | `src/app/outbox.ts` | The Engine's `Outbox` port, and the only writer of the receipts: `send` keeps a message's receipt and queues its `reply` effect in one transaction, and the effect's handler sends it through `SourceRegistry.send`; a message waits while its Source is off, and is dropped when the conversation is gone or not listened to |
 | Notices | `src/app/notices.ts` | Converts domain events and worker activity into main-Session messages. `eventNotice` handles domain notices; `reportRelay` forwards questions immediately, keeps ordinary progress on its Ticket, and relays other reports; `followupRelay` names the Tickets that own a human follow-up. Relays arriving during a turn are delivered together at its next step through the DeepSeek Harness inbox |
+
+### Passes and the L0 watchdog
+
+`Passes` records what its last completed pass saw: `completedAt` on the monotonic clock, the wall time, `tookMs`, `gapMs` (from the previous completion to this start), and the counters `slow` and `stalls`. `completedAt` stays `null` until a pass runs, which keeps "never ran" and "the timer is not running yet" distinct from an idle loop. Runtime health follows the same rule: only a pass that actually ran can make the runtime `ready` or clear an `error`; a skipped pass, such as one during setup, proves nothing and leaves health as it is. A pass longer than one beat is counted in `slow` only. A pass whose time since the previous completion (`gapMs + tookMs`) exceeds `STALL_MS` is counted in `stalls`, and the next request reports it as an `error` after any readiness flip.
+
+The protection level is deliberately L0, and its boundary matters:
+
+- It cannot prevent a synchronous event-loop block, such as a large transaction or a `SQLITE_BUSY` wait. A blocked loop runs no timer and no watchdog code; a stall is reported only after the loop resumes. On this machine a writer with `busy_timeout = 3000` blocked for about 3.3 s before failing, which is the shape of the gap this level cannot cover.
+- A suspended process is not a stall: the judgment uses the monotonic clock, which pauses with the process. The wall clock is recorded for display only.
+- Verification is split. The busy-loop tests measure a real block; the suspension test injects both clocks and verifies the decision rule only, not a real suspension.
+- Surviving a blocked loop needs a supervisor outside this process. This prototype does not have one, so L0 must not be read as 7×24 protection.
 
 ### Engine
 
@@ -316,7 +327,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/core/index.ts` | The core's exports |
 | `src/app/runtime.ts` | The Runtime, the composition root, with its start and stop |
 | `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
-| `src/app/passes.ts` | Passes, the pass scheduler |
+| `src/app/passes.ts` | Passes, the pass scheduler, and its L0 watchdog: the status of the last completed pass, slow-pass and recovered-stall counters |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
@@ -423,7 +434,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
-| `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
+| `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, the runtime health a failed pass reports, a skipped pass that clears nothing, readiness only after a real pass, a long pass measured and counted, a recovered stall reported with its measured time, and the monotonic-clock rule that a wall-clock jump alone is not a stall |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |

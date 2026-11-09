@@ -198,7 +198,7 @@ export class Runtime extends Service implements SourceHost {
   checkSetup(): void { this.setup.check() }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
-  pump(): Promise<void> { return this.passes.pump() }
+  pump(): Promise<void> { return this.passes.pump().then(() => { /* callers only wait; whether the pass ran is not their concern. */ }) }
   sendReplies(): Promise<void> { return this.outbox.sent() }
   private closing(): boolean { return this.closingFlag }
   /** Hold evaluation, dispatch, and outbound delivery while paused or awaiting setup; sources still record incoming triggers. */
@@ -222,7 +222,8 @@ export class Runtime extends Service implements SourceHost {
     // The queue delivers a card once and forgets it, so a restart can leave a live Eval whose new main Session never
     // saw its card. Rebuild it from stored state; the read caches stay volatile and rebuild on demand.
     this.redeliverCards()
-    this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
+    // Readiness comes from the first pass that actually completes, not from reaching this line: while setup is
+    // incomplete a delivered Trigger still asks for a pass, that pass is skipped, and a skipped pass must not report ready.
   }
   /** Requeues the card of each Eval that was delivered before this process started, so a fresh main Session can act on it. */
   private redeliverCards(): void {
