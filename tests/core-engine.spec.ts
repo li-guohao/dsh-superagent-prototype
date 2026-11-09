@@ -497,6 +497,14 @@ describe('context threads and notes', () => {
     h.engine.stopTicket(ticketId, 'done')
     expect(() => h.engine.note(ticketId, 'Too late')).toThrow(new UserError('ticketEnded'))
   })
+  it('keeps a second note with the same words given at another time, so a deliberate reminder is not swallowed', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.note(ticketId, 'Still checking')
+    h.tick(3600)
+    h.engine.note(ticketId, 'Still checking')
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'note')).toHaveLength(2)
+  })
 })
 describe('follow-up owners', () => {
   const accept = { kind: 'accept' as const, title: 'Y', scope: 'small', reason: 'requested' }

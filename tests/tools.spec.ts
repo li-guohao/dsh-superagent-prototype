@@ -5,6 +5,7 @@ import { builtInBase, builtInParts, defaultPrompts } from '../src/app/prompts.ts
 import { UserError } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import { RESOURCES } from '../src/app/resources.ts'
+import { resultRelay } from '../src/app/notices.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
 import { IM_WORDS, NOTE_WORDS } from '../src/infra/text.ts'
 import { CHAT, feishu, startRuntime, type Host } from './fixtures/host.ts'
@@ -415,6 +416,19 @@ it('relays a worker\'s report with its ticket card and the start of its summary,
   expect(report.ticket).not.toHaveProperty('preview')
   // The end of the ticket, which the ready report brought, comes with its card.
   expect(notices().at(-1)).toMatchObject({ ticket_ended: { ticket_id: ticket.id, state: 'completed' } })
+})
+
+it('relays the same report once when the tool is called again with the same words', async () => {
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
+  const report = { state: 'failed', summary: 'The build broke.' }
+  await h.runTool(sessionId, 'orchestrator_report', report)
+  await h.runtime.idle()
+  const first = resultRelay(h.runtime.store.tickets.get(ticket.id)!, report.state, report.summary).id
+  await h.runTool(sessionId, 'orchestrator_report', report)
+  await h.runtime.idle()
+  const second = resultRelay(h.runtime.store.tickets.get(ticket.id)!, report.state, report.summary).id
+  const reports = relaysOf('worker_report').filter(item => item.state === 'failed')
+  expect({ count: reports.length, sameId: second === first, first, second }).toEqual({ count: 1, sameId: true, first, second })
 })
 
 it('tells the main Session of the settings, prompts, requeues and unsubscriptions others made, never of its own', async () => {
