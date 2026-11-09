@@ -71,6 +71,8 @@ export class Evals extends EnginePart {
   /** Start one Eval of the Triggers queued on a Thread, judged by the gate, and ask the assessor for it. */
   start(threadKeyValue: string, policy: Policy): void {
     const thread = this.repo.threads.get(threadKeyValue)!
+    // The table starts nothing on an evaluating thread; the caller's queued-trigger check stays a separate precondition.
+    if (threadTransition(thread.evaluating ? 'evaluating' : 'idle', 'start').effect === 'noop') return
     const at = this.now()
     // A person's follow-up a ticket still decides is that ticket's: one an older version queued leaves the queue without a Decision.
     const delivered = (id: string) => {

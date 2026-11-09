@@ -35,7 +35,7 @@ function harness() {
     settle()
     return { ticketId: decision.ticketId!, candidate }
   }
-  return { repo, engine, requests, assessor, executor, launches, accepted, settle, ticket: (id: string) => repo.tickets.get(id)!,
+  return { repo, engine, requests, assessor, executor, launches, accepted, settle, policy, ticket: (id: string) => repo.tickets.get(id)!,
     setVersion: (value: string) => { version = value } }
 }
 /** The UserError a command must throw; a command that succeeds or throws something else fails the test. */
@@ -156,6 +156,19 @@ describe('legal paths stay equivalent', () => {
 })
 
 describe('explicit no-ops stay no-ops', () => {
+  it('an evaluating thread with queued triggers starts no second eval', () => {
+    const h = harness()
+    h.engine.receive(trigger('1')); h.engine.evaluateDue()
+    const first = h.repo.threads.get('chat:t1')!.evaluating!
+    h.engine.receive(trigger('2'))
+    // The Engine never calls start on an evaluating thread; reach Evals directly so the guard is proven where it lives.
+    const evals = (h.engine as unknown as { evals: { start(key: string, policy: Policy): void } }).evals
+    evals.start('chat:t1', h.policy)
+    const thread = h.repo.threads.get('chat:t1')!
+    expect(thread.evaluating!.id).toBe(first.id)
+    expect(thread.evaluating!.triggerIds).toEqual(['1'])
+    expect(h.requests).toHaveLength(1)
+  })
   it('a second stop leaves the ticket ending unchanged', () => {
     const h = harness(); const { ticketId } = h.accepted()
     h.engine.stopTicket(ticketId)

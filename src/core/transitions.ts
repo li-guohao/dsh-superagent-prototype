@@ -136,7 +136,7 @@ const ASSIGNMENT_ROWS: readonly Row<AssignmentState, AssignmentCommand>[] = [
     running: { effect: 'apply', next: ['running'] },
     ended: { effect: 'noop', next: ['ended'] },
   } },
-  { command: 'delivered', why: 'Delivery is recorded only while the assignment runs for an open ticket.', cells: {
+  { command: 'delivered', why: 'Delivery is recorded only through Assignments.running(): the ticket is open and this is its current assignment. That is an ownership test, so this row enumerates the outcome and never gates the call.', cells: {
     pending: { effect: 'noop', next: ['pending'] },
     running: { effect: 'apply', next: ['running'] },
     ended: { effect: 'noop', next: ['ended'] },
@@ -146,17 +146,17 @@ const ASSIGNMENT_ROWS: readonly Row<AssignmentState, AssignmentCommand>[] = [
     running: { effect: 'apply', next: ['running'] },
     ended: { effect: 'apply', next: ['ended'] },
   } },
-  { command: 'turnEnd', why: 'A turn ends on a running assignment; an ended one is not turned.', cells: {
+  { command: 'turnEnd', why: 'A turn ends only through Assignments.running(), which owns the ticket-open and current-assignment test; this row enumerates that outcome and never gates the call.', cells: {
     pending: { effect: 'noop', next: ['pending'] },
     running: { effect: 'apply', next: ['running'] },
     ended: { effect: 'noop', next: ['ended'] },
   } },
-  { command: 'deliveryFail', why: 'A failed delivery restarts a running assignment; an ended one is not delivered.', cells: {
+  { command: 'deliveryFail', why: 'A failed delivery is recorded only through Assignments.running(), an ownership test this row enumerates but never gates; an ended assignment is not delivered.', cells: {
     pending: { effect: 'noop', next: ['pending'] },
     running: { effect: 'apply', next: ['running'] },
     ended: { effect: 'noop', next: ['ended'] },
   } },
-  { command: 'interrupt', why: 'An interruption restarts a running assignment or hands it back; an ended one is left alone.', cells: {
+  { command: 'interrupt', why: 'An interruption is handled only through Assignments.running(); its settled/busy choice is business logic no cell can express, so this row enumerates the outcome and never gates the call.', cells: {
     pending: { effect: 'noop', next: ['pending'] },
     running: { effect: 'conditional', next: ['running', 'ended'] },
     ended: { effect: 'noop', next: ['ended'] },
@@ -171,7 +171,7 @@ const ASSIGNMENT_ROWS: readonly Row<AssignmentState, AssignmentCommand>[] = [
     running: { effect: 'apply', next: ['ended'] },
     ended: { effect: 'noop', next: ['ended'] },
   } },
-  { command: 'restart', why: 'A restart ends the running assignment it replaces; other states have no assignment to replace.', cells: {
+  { command: 'restart', why: 'A restart is reached only through Assignments.running() and also replaces the assignment with a new one, which no cell can express; this row enumerates the replaced assignment only.', cells: {
     pending: { effect: 'noop', next: ['pending'] },
     running: { effect: 'apply', next: ['ended'] },
     ended: { effect: 'noop', next: ['ended'] },
