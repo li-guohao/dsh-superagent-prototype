@@ -8,6 +8,7 @@ import type { AssessmentOutcome } from './ports.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Replies } from './replies.ts'
 import { canRetry } from './stage.ts'
+import { ticketRefusal, ticketState, ticketTransition, transitionError } from './transitions.ts'
 
 const sameChannel = (a: ChannelRef, b: ChannelRef): boolean => JSON.stringify(a) === JSON.stringify(b)
 /** Whether an Input is a message no person wrote, such as CI's, a bot's, or the main Session's note. */
@@ -59,7 +60,8 @@ export class Tickets extends EnginePart {
    * @throws UserError when the ticket is unknown or has ended.
    */
   bind(ticketId: string, thread: ThreadRef, own: boolean): Ticket {
-    if (!liveTicket(this.require(ticketId))) throw new UserError('ticketEnded')
+    const refusal = ticketRefusal(this.require(ticketId), 'bind')
+    if (refusal) throw refusal
     this.subscribe(ticketId, thread)
     const ticket = this.require(ticketId)
     const followed = threadKey(thread)
@@ -109,8 +111,10 @@ export class Tickets extends EnginePart {
     // A follow-up that reached a ticket goes elsewhere only once the workers that decide it hand it back.
     this.leftToWorkers(trigger)
     const current = this.require(ticketId)
-    if (current.ended?.by === 'human') throw new UserError('ticketStopped')
-    if (!liveTicket(current) && !this.policy().revalidate(current.mandate)) throw new UserError('mandateRevoked')
+    const cell = ticketTransition(ticketState(current), 'attach')
+    if (cell.effect === 'refuse') throw transitionError(cell)
+    // An open ticket already holds its Mandate; only an ended one asks the Policy whether it still does.
+    if (cell.effect === 'conditional' && !this.policy().revalidate(current.mandate)) throw transitionError(cell)
     return trigger
   }
   /**
@@ -149,7 +153,8 @@ export class Tickets extends EnginePart {
    */
   requestStatus(ticketId: string): boolean {
     const ticket = this.require(ticketId)
-    if (!liveTicket(ticket) || runningAssignment(ticket)?.report?.state !== 'waiting') return false
+    if (ticketTransition(ticketState(ticket), 'requestStatus').effect !== 'conditional'
+      || runningAssignment(ticket)?.report?.state !== 'waiting') return false
     this.addInput(ticket, { id: `status:${ticketId}:${ticket.updatedAt}`, kind: 'text', text: STATUS_REQUEST, at: this.now() })
     return true
   }
@@ -158,7 +163,8 @@ export class Tickets extends EnginePart {
    * @throws UserError when the ticket is unknown.
    */
   stop(ticketId: string, reason?: string): Ticket {
-    this.end(ticketId, 'human', 'stopped', this.now(), reason)
+    const ticket = this.require(ticketId)
+    if (ticketTransition(ticketState(ticket), 'stop').effect === 'apply') this.end(ticketId, 'human', 'stopped', this.now(), reason)
     return this.require(ticketId)
   }
   /**
@@ -168,7 +174,8 @@ export class Tickets extends EnginePart {
   retry(ticketId: string): Ticket {
     const ticket = this.require(ticketId)
     const latest = latestAssignment(ticket)
-    if (!canRetry(ticket) || !latest) throw new UserError('notRetryable')
+    const cell = ticketTransition(ticketState(ticket), 'retry')
+    if (cell.effect === 'refuse' || (cell.effect === 'conditional' && !canRetry(ticket)) || !latest) throw transitionError(cell)
     this.endAssignment(ticket, latest, 'retried')
     this.requeueUntaken(ticket, latest)
     const assignment = this.newAssignment(ticket)
@@ -251,7 +258,8 @@ export class Tickets extends EnginePart {
    */
   wake(ticketId: string): void {
     const ticket = this.repo.tickets.get(ticketId)
-    if (!ticket || liveTicket(ticket) || ticket.ended?.by === 'human' || !ticket.undelivered.length) return
+    if (!ticket) return
+    if (ticketTransition(ticketState(ticket), 'wake').effect !== 'conditional' || !ticket.undelivered.length) return
     const policy = this.policy()
     if (policy.paused) return
     if (!policy.revalidate(ticket.mandate)) { this.refuse(ticket); return }
@@ -344,7 +352,7 @@ export class Tickets extends EnginePart {
    */
   end(ticketId: string, by: TicketEndBy, outcome: TicketOutcome, at = this.now(), reason?: string): void {
     const ticket = this.require(ticketId)
-    if (!liveTicket(ticket)) return
+    if (ticketTransition(ticketState(ticket), 'end').effect === 'noop') return
     const stopping = ticket.assignments.filter(assignment => assignment.state !== 'ended')
     const why = reason && reason !== outcome ? { reason } : {}
     const until = readUntil(ticket)
@@ -394,7 +402,8 @@ export class Tickets extends EnginePart {
    */
   note(ticketId: string, text: string): Ticket {
     const ticket = this.require(ticketId)
-    if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+    const refusal = ticketRefusal(ticket, 'note')
+    if (refusal) throw refusal
     const at = this.now()
     this.addInput(ticket, { id: key('input', ticketId, 'note', at, text), kind: 'note', text, at })
     return this.require(ticketId)
@@ -405,7 +414,8 @@ export class Tickets extends EnginePart {
    * @throws UserError when the ticket is unknown or has ended.
    */
   followForContext(ticketId: string, ref: ThreadRef): boolean {
-    if (!liveTicket(this.require(ticketId))) throw new UserError('ticketEnded')
+    const refusal = ticketRefusal(this.require(ticketId), 'followForContext')
+    if (refusal) throw refusal
     if (this.thread(ref).subscriptions.includes(ticketId)) return false
     this.subscribe(ticketId, ref)
     const thread = this.thread(ref)

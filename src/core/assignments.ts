@@ -6,6 +6,7 @@ import type { ReportState, Ticket } from './model.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Replies } from './replies.ts'
 import { automatic, type Tickets } from './tickets.ts'
+import { assignmentRefusal, assignmentTransition, ticketRefusal } from './transitions.ts'
 
 /** What an Assignment reports: a worker's report, or the Executor's own (`waiting` after an idle turn, `failed` after an error). */
 export interface WorkerReport {
@@ -34,7 +35,7 @@ export class Assignments extends EnginePart {
   started(ticketId: string, assignmentId: string): void {
     const ticket = this.require(ticketId)
     const assignment = ticket.assignments.find(item => item.id === assignmentId)
-    if (!assignment || assignment.state === 'ended') return
+    if (!assignment || assignmentTransition(assignment.state, 'started').effect === 'noop') return
     assignment.state = 'running'; assignment.startedAt ??= this.now()
     ticket.updatedAt = this.now()
     this.repo.tickets.save(ticket)
@@ -98,7 +99,8 @@ export class Assignments extends EnginePart {
    */
   report(ticketId: string, report: WorkerReport): Ticket {
     const ticket = this.require(ticketId)
-    if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+    const closed = ticketRefusal(ticket, 'report')
+    if (closed) throw closed
     if (report.question && (report.state === 'ready' || report.answers)) throw new UserError('questionWithResult')
     if (report.askedBy && !report.question) throw new UserError('askerWithoutQuestion')
     const person = (id: string, channel: boolean) => {
@@ -109,7 +111,8 @@ export class Assignments extends EnginePart {
     if (report.answers && !person(report.answers, false)) throw new UserError('notAnswerable')
     const assignment = runningAssignment(ticket) ?? latestAssignment(ticket)
     if (!assignment) throw new UserError('unknownAssignment')
-    if (assignment.state === 'ended') throw new UserError('assignmentEnded')
+    const ended = assignmentRefusal(assignment.state, 'report')
+    if (ended) throw ended
     const at = this.now()
     const previous = ticket.attention
     const ask = (question: string) => ({ id: key('attention', ticketId, question, at), question, ...(report.askedBy ? { triggerId: report.askedBy } : {}) })

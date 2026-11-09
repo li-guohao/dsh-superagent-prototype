@@ -308,6 +308,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/core/assignments.ts` | `Assignments`: the Executor's facts and its workers' Reports |
 | `src/core/replies.ts` | `Replies`: the Engine's Channel writes |
 | `src/core/stage.ts` | `ticketStage` and `canRetry`: the Ticket stages of [003 Execution](003-execution.md) |
+| `src/core/transitions.ts` | The explicit transition tables of Tickets, Assignments and Thread Evals: each cell's effect, next states and refusal code, the refusal diagnostic that names its entity, state and command, and the startup assertion that every table is total |
 | `src/core/errors.ts` | `UserError` and `USER_ERRORS` |
 | `src/core/reasons.ts` | `Reason`, `REASONS` and `reasonText`: why the core recorded a Decision or set a Trigger aside, by code |
 | `src/core/ids.ts` | `key`: ids derived from their inputs, equal for equal inputs |
@@ -406,6 +407,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | Test | Covers |
 | --- | --- |
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
+| `tests/transitions.spec.ts` | The transition tables: total coverage of every state and command, refusals that name their entity, state and command, legal paths kept equivalent, and the no-ops that stay no-ops |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |

@@ -7,6 +7,7 @@ import type { AssessmentOutcome, Candidate, Policy } from './ports.ts'
 import { said, type Reason } from './reasons.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Tickets } from './tickets.ts'
+import { threadTransition, transitionError } from './transitions.ts'
 
 /** An outcome for the Eval that holds a Trigger; `evalId` names the Eval it was judged for, so a later Eval refuses it. */
 export type Outcome = AssessmentOutcome & { evalId?: string }
@@ -132,7 +133,9 @@ export class Evals extends EnginePart {
     const trigger = this.repo.triggers.get(triggerId)
     if (!trigger) throw new UserError('unknownTrigger')
     const held = this.holding(triggerId)
-    if (outcome.evalId && held?.evaluating?.id !== outcome.evalId) throw new UserError('evalFinished', { eval: outcome.evalId })
+    if (outcome.evalId && held?.evaluating?.id !== outcome.evalId) {
+      throw transitionError(threadTransition(held?.evaluating ? 'evaluating' : 'idle', 'decide'), { eval: outcome.evalId })
+    }
     // Prevent a replayed trigger that already created a ticket from spawning a second one.
     const earlier = outcome.kind === 'accept' ? this.accepted(threadKey(trigger.threads[0]!)).get(triggerId) : undefined
     if (earlier) {
@@ -210,9 +213,11 @@ export class Evals extends EnginePart {
    */
   routed(triggerId: string, ticketId: string): void {
     const held = this.holding(triggerId)
+    if (threadTransition(held?.evaluating ? 'evaluating' : 'idle', 'route').effect === 'noop' || !held?.evaluating) return
+    const evaluation = held.evaluating
     const reason: Reason = { code: 'routed', values: { ticket: ticketId } }
-    if (held?.evaluating?.triggerIds.length === 1) this.finish(held, held.evaluating, { kind: 'ignore', reason: [reason] })
-    else if (held) this.reassess(held, { ...reason, triggerId }, [triggerId])
+    if (evaluation.triggerIds.length === 1) this.finish(held, evaluation, { kind: 'ignore', reason: [reason] })
+    else this.reassess(held, { ...reason, triggerId }, [triggerId])
   }
   /** Start the Evals in progress again under the new Policy version, and say that it changed. */
   policyChanged(from: string, to: string): void {

@@ -9,6 +9,7 @@ import { Evals, type Outcome } from './evals.ts'
 import { Intake, type ReceiveResult } from './intake.ts'
 import { Replies, type Reply, type ReplyRequest } from './replies.ts'
 import { Tickets } from './tickets.ts'
+import { assertTransitionTables } from './transitions.ts'
 
 export type { EngineOptions } from './part.ts'
 export type { WorkerReport } from './assignments.ts'
@@ -29,6 +30,8 @@ export class Engine {
   private readonly evals: Evals
   private readonly intake: Intake
   constructor(private readonly options: EngineOptions) {
+    // Fail at startup if a state or command was added without a transition, rather than letting it become an implicit self-loop.
+    assertTransitionTables()
     this.repo = options.repo
     this.replies = new Replies(options)
     this.tickets = new Tickets(options, this.replies)

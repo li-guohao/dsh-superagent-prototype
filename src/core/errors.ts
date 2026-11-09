@@ -47,15 +47,27 @@ export const USER_ERRORS = {
 } as const satisfies Record<string, readonly ['missing' | 'refused', string]>
 export type UserErrorCode = keyof typeof USER_ERRORS
 
+/** The transition a refusal came from: which machine, the state it was in, and the command it refused. */
+export interface TransitionDiagnostic {
+  readonly entity: 'ticket' | 'assignment' | 'thread'
+  readonly state: string
+  readonly command: string
+}
+
 /**
  * Structured error thrown by Engine parts and application services when a caller request is invalid or references missing state.
  * Tool handlers and HTTP routes inspect its code and missing flag to return appropriate status responses, while the web panel localizes the code.
+ * A state refusal also carries `transition`, so a caller can tell which command the current state refused; the code and
+ * message stay the same, since they are the contract the panel and existing callers rely on.
  */
 export class UserError extends Error {
   readonly missing: boolean
-  constructor(readonly code: UserErrorCode, readonly values: Record<string, string> = {}) {
+  // Declared rather than assigned so it stays non-enumerable: callers can read it, but the equality contract of code and message is untouched.
+  declare readonly transition?: TransitionDiagnostic
+  constructor(readonly code: UserErrorCode, readonly values: Record<string, string> = {}, transition?: TransitionDiagnostic) {
     const [kind, text] = USER_ERRORS[code]
     super(text.replace(/\{(\w+)\}/g, (match, name: string) => values[name] ?? match))
     this.missing = kind === 'missing'
+    if (transition) Object.defineProperty(this, 'transition', { value: transition, enumerable: false })
   }
 }
